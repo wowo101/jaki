@@ -206,13 +206,16 @@ done
 #     binary directly, or it runs a script that does. Matching the box-model-eval directory
 #     alone is too broad - it catches reporting and download units (taskboard) that
 #     never touch the GPU, and refusing on those would block chat for no reason.
-# Require the name in COMMAND POSITION – followed by a closing quote, a flag, or the end of
-# the line. Matching any mention is a different and wrong test: `note-transcribe`'s docstring
-# names llama-server in prose, and its timer unit is enabled, so a bare name match refused
-# every chat load for as long as a voice-note sweep ran, blaming an "eval driver". It also
-# excludes `hatch-llama-server.service`, which is a unit reference rather than an invocation.
-# A driver this misses degrades the message, not the protection: step 2 still refuses on size.
-GPU_BINS="($HATCH_GPU_SERVERS|$HATCH_GPU_TOOLS)([\"']|[[:space:]]+-|[[:space:]]*\\\\?\$)"
+# Require an INVOCATION, never a mention. A name counts when it is followed by a flag or by
+# `serve` (`llama-server -m`, `gufo serve`), ends a line or a continued line, opens an argv
+# list whose next item is a flag or `serve` (`["llama-server", "-m"`), or ends a quoted path
+# that starts with `$`, `/` or `~` (`"$BIN/llama-server"`). A mention refuses every model load
+# for as long as the unit is active: a docstring naming llama-server in prose did it while a
+# voice-note sweep ran, and a sampler's `comm == "gufo"` did it for ten minutes on 2026-10-05.
+# Every script in the repo that invokes a GPU binary still matches. A driver this misses
+# degrades the message, not the protection: step 2 still refuses on size.
+_GPU_NAMES="($HATCH_GPU_SERVERS|$HATCH_GPU_TOOLS)"
+GPU_BINS="${_GPU_NAMES}([\"']?[[:space:]]+(-|serve\\b)|[\"']?[[:space:]]*\\\\?\$|[\"'][[:space:]]*,[[:space:]]*[\"'](-|serve\\b))|[\"'](\\\$|/|~)[^\"' ]*/${_GPU_NAMES}[\"']"
 drivers=""
 while read -r u; do
   case "$u" in llama-swap.service|open-webui.service) continue ;; esac

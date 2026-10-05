@@ -12,7 +12,7 @@
 set -u
 HERE=$(dirname "$(readlink -f "$0")")
 GUARD="$HERE/hatch-serving-guard"
-T=$(mktemp -d); trap 'kill $RPID 2>/dev/null; rm -rf "$T"' EXIT
+T=$(mktemp -d); trap 'kill $RPID 2>/dev/null; systemctl --user stop "guardtest-$$-a" "guardtest-$$-b" "guardtest-$$-c" 2>/dev/null; rm -rf "$T"' EXIT
 pass=0; fails=0
 check() { if [ "$2" = "$3" ]; then pass=$((pass+1)); echo "  ok    $1"; else fails=$((fails+1)); echo "  FAIL  $1: got '$2', want '$3'"; sed 's/^/        /' "$T/err" 2>/dev/null; fi; }
 
@@ -102,6 +102,35 @@ check "exit" "$(run probe)" 0
 check "podman rm of the orphan" "$(cat "$T/removed" 2>/dev/null)" "rm -f -t 10 hatch-x"
 rm -f "$T/removed"
 check "no orphan, no removal" "$(run probe; cat "$T/removed" 2>/dev/null)" 0
+
+# Cases 8-10 start a throwaway user unit running a script, because the guard's driver scan reads
+# active units. The script sleeps, so the unit stays active while the guard runs; the names it
+# carries are the fake ones in $T/gpu.env, so no real unit on the machine can match them.
+driver_unit() {   # driver_unit <name> <script body> -- start a transient unit running it
+  printf '#!/bin/sh\n: <<EOF\n%s\nEOF\nexec sleep 60\n' "$2" > "$T/$1.sh"; chmod +x "$T/$1.sh"
+  systemd-run --user --quiet --collect --unit="$1" "$T/$1.sh"
+  for _ in $(seq 1 50); do systemctl --user is-active --quiet "$1" && break; sleep 0.1; done
+}
+U="guardtest-$$"
+reg 1
+
+echo "8. a unit whose script only mentions a GPU binary does not refuse a load"
+driver_unit "$U-a" 'if comm == "no-such-server":
+for g in ("pi", "no-such-server", "qmd"):
+"release": gh("org/no-such-server"),'
+check "exit" "$(run probe)" 0
+systemctl --user stop "$U-a" 2>/dev/null
+
+echo "9. a unit whose script runs a GPU binary by a quoted path refuses it"
+driver_unit "$U-b" 'leg v1 "$BIN/no-such-server" || FAILED=1'
+check "exit" "$(run probe)" 97
+check "names the unit" "$(grep -c "$U-b" "$T/err")" 1
+systemctl --user stop "$U-b" 2>/dev/null
+
+echo "10. a unit whose script passes a GPU binary in an argv list refuses it"
+driver_unit "$U-c" 'subprocess.run(["no-such-tool", "-m", model])'
+check "exit" "$(run probe)" 97
+systemctl --user stop "$U-c" 2>/dev/null
 
 echo; echo "$pass passed, $fails failed"
 [ "$fails" = 0 ]

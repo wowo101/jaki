@@ -78,6 +78,11 @@ ExecStartPre=-/usr/bin/podman rm -f open-webui
 # cache and re-reads the rest every turn (WORK/model-serving.md, 2026-09-28). It also enables the
 # admin panel's model load and unload for that connection and a llama.cpp flag on *Continue*.
 # Single-quoted so systemd passes the JSON's double quotes through.
+# Its `model_ids` replace Open WebUI's request to /v1/models with this list, so the small model,
+# which the router keeps out of /v1/models, becomes known to Open WebUI and can be the task model
+# (TASK_MODEL_EXTERNAL, for titles and tags; Open WebUI uses a task model only when it knows it,
+# and otherwise falls back to the chat model in silence). A model with no entry in Open WebUI's
+# database is shown to admins only, so users never see the small model (2026-10-05).
 # ENABLE_FOLLOW_UP_GENERATION=False: follow-up suggestions are one more request to the chat model
 # after every answer, in a queue every user shares (2026-10-05). Titles and tags stay on; they
 # cost one request each, after a conversation's first answer only.
@@ -88,7 +93,8 @@ ExecStart=/usr/bin/podman run --rm --name open-webui \
   -e HOST=${HATCH_SERVE_HOST} \
   -e OPENAI_API_BASE_URLS=${HATCH_SERVE_URL} \
   -e OPENAI_API_KEYS=hatch-local \
-  -e 'OPENAI_API_CONFIGS={"0":{"provider":"llama.cpp"}}' \
+  -e 'OPENAI_API_CONFIGS={"0":{"provider":"llama.cpp","model_ids":["qnext","qwen3.5-4b"]}}' \
+  -e TASK_MODEL_EXTERNAL=qwen3.5-4b \
   -e ENABLE_OLLAMA_API=False \
   -e ENABLE_PERSISTENT_CONFIG=False \
   -e ENABLE_FOLLOW_UP_GENERATION=False \

@@ -119,6 +119,10 @@ changes  = "The one model the box has, and it answers everything: a quick questi
   [models.qnext.pi]
   provider       = "local"
   context_window = 131072
+  # Pi's per-reply output limit; Pi's default is 16384, which a long document written in one
+  # reply with reasoning at medium used up on 2026-10-05, losing the draft. Pi clamps it to
+  # the room left in the window.
+  max_tokens     = 32768
   reasoning      = true      # Pi's per-model flag; `jaki client-config pi` copies it
   compaction     = { reserve_tokens = 16384, keep_recent_tokens = 20000 }   # Pi's defaults, set globally in Pi's settings
   evidence = "The reserve sets two things. Pi compacts once the context passes the window minus the reserve, and it gives the compaction summary 80% of the reserve as its token budget, reasoning included. A 3,072 reserve fails on qnext: near the window Pi caps each reply at the window minus its own estimate of the prompt, which reached 1 token at ~62k, and the emergency compaction's summary then ran out of its 2,457 tokens at medium thinking, so Pi kept no summary and the next request exceeded the window (WORK/research-agents.md, 2026-10-05). At 16,384 the summary has 13,107 tokens. The context window is the served --context, so it is honest."

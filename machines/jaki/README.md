@@ -115,8 +115,10 @@ When the log says the store matches:
 `start` refuses while weights are missing, so a half-fetched store never serves. The chat
 surface takes 10 to 20 minutes on its first start, and its port stays closed until it is ready.
 Then open `http://<your address>:3000` and **create the first account, which becomes the
-admin.** Sign-up stays open for other people on your network; their accounts wait for an admin
-to approve them.
+admin.** Sign-up stays open for other people on your network; their accounts wait for an admin to
+approve them. An approved user sees no model until an admin grants access to it: in Admin
+Settings, under Models, open `qnext` and make it public or give it to a group. That setting is
+kept in the chat surface's database and survives restarts.
 
 That is the whole install. There is nothing to configure in the browser. `./jaki status` shows
 the services, what is loaded, and where the download is; `./jaki stop` stops the server.
@@ -179,8 +181,8 @@ jaki serves a few people taking turns, or one agent run with some chat beside it
 - **Everyone shares one queue.** Requests wait first come, first served, whoever sent them. The
   chat model sees every request as coming from the router, so it cannot take turns between
   people.
-- **Chat.** Each answer in the chat surface is one request, and a conversation's first answer is followed
-by two more, for its title and its tags; follow-up suggestions are off. Two people whose answers generate at the
+- **Chat.** Each answer in the chat surface is one request to the chat model. A conversation's
+  title and tags come from the small model, and follow-up suggestions are off. Two people whose answers generate at the
   same moment get about 26 tokens a second each; a third person's answer starts when one of
   them finishes.
 - **Agent runs.** A run with sub-agents fills both places (see [`agents.md`](agents.md)). Chat

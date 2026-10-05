@@ -202,7 +202,7 @@ is written only to memory. The unit is the only place a change lasts: edit it, t
 `systemctl --user restart open-webui`. Rows written to the database before the setting existed,
 among them two audio URLs pointing at `api.openai.com`, are still there and ignored.
 
-The unit sets two things a fresh Open WebUI gets wrong:
+The unit sets three things a fresh Open WebUI gets wrong:
 
 - **Audio.** Both engines are OpenAI-compatible against `HATCH_SERVE_URL`: speech in is
   `deepdml/faster-whisper-large-v3-turbo-ct2`, speech out `speaches-ai/Kokoro-82M-v1.0-ONNX`
@@ -212,6 +212,13 @@ The unit sets two things a fresh Open WebUI gets wrong:
   rejects. German speech out is `speaches-ai/piper-de_DE-thorsten-medium` with voice
   `de_DE-thorsten-medium`; Open WebUI holds one speech-out model, so switching language means
   editing those two lines.
+- **Titles and tags come from the small model.** `OPENAI_API_CONFIGS` lists `qnext` and
+  `qwen3.5-4b` as the connection's models, which replaces Open WebUI's request to `/v1/models`,
+  and `TASK_MODEL_EXTERNAL=qwen3.5-4b` names the small model for those tasks. Open WebUI uses a
+  task model only when it knows it, and otherwise falls back to the chat model in silence. A
+  model with no entry in Open WebUI's database is shown to admins only, so users never see the
+  small model in their picker. Follow-up suggestions are off
+  (`ENABLE_FOLLOW_UP_GENERATION=False`): each was one more chat-model request per answer.
 - **Uploaded files go into the context whole.** `BYPASS_EMBEDDING_AND_RETRIEVAL=True` and
   `RAG_FULL_CONTEXT=True` do this. By default Open WebUI splits a file, embeds the pieces and
   passes the model only the few that match, so the model sees part of the file without saying
