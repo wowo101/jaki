@@ -173,15 +173,15 @@ note     = """THE SANCTIONED MEMORY CONFIGURATIONS LIVE HERE, canonically (every
 A NUMBER IS MEANINGLESS WITHOUT ITS STATE. Against a 124 GiB GTT, qnext on gufo in production shape:
 
   state                                        GTT     MemAvailable   when
-  qnext alone, 2 sessions                      85.9    35.2           2026-10-04, gufo 0.7.0
+  qnext alone, 2 sessions, 131k window        89.2    31.4           2026-10-05, gufo 0.7.0
   qnext + the 4B delegate                      89.3    -              the standing pair, before any image (2026-09-27)
   + zimage, loaded and idle                    98.7    16.7           after one image, during a busy maxload round (2026-09-28)
   PEAK, one 1024x1024 image, 4B loaded         106     18.5           2026-09-27, gufo b722a61
-  PEAK, every model busy at once               107.5   5.1 (lowest)   maxload 2026-10-04, 0.7.0, 2 sessions, 4 GiB RAM cache
+  PEAK, every model busy at once               114.6   1.1 (lowest)   maxload 2026-10-05, 0.7.0, 2 sessions at ~118k each, 131k window, 4 GiB RAM cache
 
 sd-server loads its weights on the FIRST REQUEST and not at start, so zimage adds ~10 GiB only once an image has been asked for, and ~17 GiB at the peak of a cold image. Under gufo every byte is a fixed allocation: the n-gram table is read from disk and holds no page cache, so nothing gives way before the kernel's OOM choice. The production image path pauses the 4B for each image (~5 GiB), the front refuses an image whose need MemAvailable cannot cover, and the pressure watcher unloads an idle zimage below 8 GiB – engine/infra/model-serving/README.md, *The admission guard*. The llama.cpp serve's table, where -lm mmap made the table reclaimable page cache: [retired.qnext_llamacpp] in engine/models.archive.toml.
 
-CAVEATS THAT STILL BOUND IT: maxload ran with the speech container and GPU diarisation idle, and with the 4B left loaded through the image, which production pauses; a run with diarisation active would size the margins.
+The three middle rows date from the 65k window, which ran 3.3 GiB lighter at load. CAVEATS THAT STILL BOUND IT: maxload ran with the speech container and GPU diarisation idle, and with the 4B left loaded through an image sent straight to sd-server, which production pauses and admits only with 11.5-17 GiB plus a 4 GiB floor free, so the 1.1 GiB low point is beyond what production allows; a run with diarisation active would size the margins.
 
 Serving quirks are comments on the llama-swap entry, where an operator editing it is actually looking; Turbo wants cfg-scale 1.0 and no negative prompt."""
 changes  = "Ask for a picture and one arrives in about half a minute, or 45 seconds if the model has to load first. It costs about ten gigabytes while loaded, sits alongside the resident and the delegate rather than displacing either, and unloads itself after 15 minutes idle. Asking for an image no longer costs you the chat model – that was the arrangement under the old escalation model, and it is gone."
