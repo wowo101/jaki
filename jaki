@@ -320,7 +320,7 @@ if kind == "openai":
     print(f"OPENAI_BASE_URL={url}")
     print("OPENAI_API_KEY=none")
     sys.exit()
-entries, default, compaction, effort = [], None, None, None
+entries, default, compaction, effort, overrides = [], None, None, None, {}
 for m in models.values():
     pi = m.get("pi")
     if not pi:
@@ -329,6 +329,12 @@ for m in models.values():
     if pi.get("reasoning"):
         e["reasoning"] = True
     entries.append(e)
+    if m.get("role") != "resident" and pi.get("compaction"):
+        # A small window needs its own reserve: Pi's reserve is absolute, and one sized for the
+        # resident would leave a 16k window nothing to compact into.
+        c = pi["compaction"]
+        overrides[f"jaki/{m['swap_id']}"] = {"reserveTokens": c["reserve_tokens"],
+                                              "keepRecentTokens": c["keep_recent_tokens"]}
     if m.get("role") == "resident":
         default, compaction = m["swap_id"], pi.get("compaction")
         effort = m.get("serve", {}).get("reasoning_effort")
@@ -344,6 +350,8 @@ if effort:
 if compaction:
     settings["compaction"] = {"reserveTokens": compaction["reserve_tokens"],
                               "keepRecentTokens": compaction["keep_recent_tokens"]}
+    if overrides:
+        settings["compaction"]["modelOverrides"] = overrides
 print("\n~/.pi/agent/settings.json (merge into what is there)")
 print(json.dumps(settings, indent=2))
 PY

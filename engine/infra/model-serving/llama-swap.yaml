@@ -133,7 +133,7 @@ models:
       ${env.HATCH_IMG_GUFO_RUNTIME}
       gufo serve --host 127.0.0.1 --port ${PORT} llm
       --model /models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
-      --served-model-name qnext --context 65536 --sessions 2
+      --served-model-name qnext --context 131072 --sessions 2
       --cache-ram-bytes 4294967296 --max-pending-per-client 16
       --speculative mtp --mtp-model /models/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf
       --mmproj /models/Qwen3.8-Flash-Next-mmproj-BF16.gguf

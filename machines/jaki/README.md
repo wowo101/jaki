@@ -39,13 +39,13 @@ Measured between 2026-09-10 and 2026-10-04 on the reference machine:
 | reading a long prompt | about 1,200 tokens per second at any length |
 | one 768×1024 image | about 31 seconds |
 | speech in or out, a short sentence | under 3 seconds |
-| memory | 89 GiB of the GPU's 124 for the two text models, about 99 with the image model loaded, 106 at the peak of an image, 107.5 with every model busy at once |
+| memory | 89 GiB of the GPU's 124 for the chat model at its 131k window; 115 at the peak with every model busy at once |
 | weights on disk | 120 GiB |
 
 ## What you need
 
 - **An AMD Strix Halo machine with 128 GB of unified memory** (the Ryzen AI Max series). jaki is
-  measured on one class of machine at a time, and this is it. The chat model alone holds 86 GiB.
+  measured on one class of machine at a time, and this is it. The chat model alone holds 89 GiB.
 - **Linux with a current kernel.** Kernel 6.18.4 or newer and linux-firmware 20260110 or newer;
   older ones carry a bug on this GPU. Any rolling distribution qualifies. The reference machine
   runs CachyOS; the container images also run on Fedora.
@@ -207,7 +207,7 @@ every edit.
 | `./jaki check` says `[STALE]` for a binary | the binary there was not unpacked from the pinned archive; run it without `--check` |
 | a request answers `404 no router for requested model` | the id is not an entry or an alias in `llama-swap.yaml` |
 | a model start fails with `upstream command exited prematurely` | a binary, the engine image or a weight file is missing at the path the config names; run both `--check`s |
-| the chat model never becomes ready | read its own log (below): `/dev/kfd` missing or not writable, or too little memory for its 86 GiB |
+| the chat model never becomes ready | read its own log (below): `/dev/kfd` missing or not writable, or too little memory for its 89 GiB |
 | the microphone or read-aloud button fails | `./jaki check`, then `curl $JAKI/running` for the `speech` entry |
 | the chat surface's port is closed for the first 20 minutes | first-start database build; this is normal |
 | nothing runs after a reboot | `loginctl enable-linger $USER` was not set |

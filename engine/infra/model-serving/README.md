@@ -22,7 +22,7 @@ Loading one never unloads another, so entries accumulate as they are asked for a
 
 | entry | answers | size | in `/v1/models` | unloads |
 |---|---|---|---|---|
-| `qnext` | the chat model: chat, drafting, long documents, images in; gufo in a podman container | 86 GiB | yes | never, once loaded |
+| `qnext` | the chat model: chat, drafting, long documents, images in; gufo in a podman container | 89 GiB | yes | never, once loaded |
 | `qwen3.5-4b` | the small model: short mechanical jobs such as tagging or transcript cleanup | 3 GB | no | never, once loaded |
 | `zimage` | the image model: Z-Image-Turbo through `sd-server` | 11 GB | no | after 15 idle minutes |
 | `speech` | transcription and speech synthesis: speaches on the CPU | 2 GB | no | never, once started |
@@ -37,14 +37,19 @@ first request for it (see *After a boot*).
 The three entries other than `qnext` are `unlisted`. That keeps them out of every model picker,
 and a client still reaches them by id. The chat surface therefore shows one model.
 
-**Memory.** Against the GPU's 124 GiB:
+**Memory.** Against the GPU's 124 GiB, with the chat model at its 131,072-token window and two
+sessions (measured 2026-10-05):
 
 | state | GPU memory (GTT, GiB) | MemAvailable (GiB) |
 |---|--:|--:|
-| chat model alone, 2 sessions | 85.9 | 35.2 |
-| chat and small model, before any image | 89.3 | – |
-| peak of one image, small model loaded | 106 | 18.5 |
-| peak with every model busy at once | 107.5 | 5.1 at the lowest |
+| chat model alone | 89.2 | – |
+| peak with every model busy at once: a ~118k-token request on each session, the small model, a search and an image | 114.6 | 1.1 at the lowest, below 3 for 26 s |
+
+That peak sent its image straight to sd-server. In production the image front pauses the small
+model first and admits an image only with 11.5–17 GiB plus a 4 GiB floor free, so production
+does not reach that low point by the same route. At the earlier 65,536-token window the chat and
+small model held 89.3 GiB together and one image peaked at 106; neither has been measured at the
+current window.
 
 The chat model serves two requests at once (`--sessions 2`) with its RAM cache capped at 4 GiB.
 Four sessions ran out of memory with every model busy. The reason for each flag is in
@@ -210,7 +215,7 @@ The unit sets two things a fresh Open WebUI gets wrong:
 - **Uploaded files go into the context whole.** `BYPASS_EMBEDDING_AND_RETRIEVAL=True` and
   `RAG_FULL_CONTEXT=True` do this. By default Open WebUI splits a file, embeds the pieces and
   passes the model only the few that match, so the model sees part of the file without saying
-  so. With the whole file in the context, the limit is the context window: 64k tokens on the
+  so. With the whole file in the context, the limit is the context window: 131k tokens on the
   chat model, 16k on the small model. A larger document is cut off without an error.
 
 Check both after updating the image; the variable names are upstream's and can change.
@@ -268,7 +273,7 @@ Anything that wants GPU memory is one of four kinds. This router serves the midd
 
 **Put every entry in the `box` group, GPU or not.** An entry in no group lands in the router's
 `(default)` group, which is exclusive, so loading it would unload everything in `box`. That is
-why `speech` is in `box` although it uses no GPU: without it, a dictation would unload the 86
+why `speech` is in `box` although it uses no GPU: without it, a dictation would unload the 89
 GiB chat model.
 
 **`persistent: true` does not keep an entry loaded.** It stops other groups from unloading the

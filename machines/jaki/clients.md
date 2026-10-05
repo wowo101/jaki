@@ -28,7 +28,7 @@ gets `404`, so a misconfigured client fails at once and never gets another model
 
 | model | for | context | at once | the server sets |
 |---|---|--:|---|---|
-| `qnext` | chat, drafting, long documents, tool calls, images in | 65,536 | 2 | reasoning effort `low`; temperature 1.0, top_p 0.95, top_k 20 |
+| `qnext` | chat, drafting, long documents, tool calls, images in | 131,072 | 2 | reasoning effort `low`; temperature 1.0, top_p 0.95, top_k 20 |
 | `qwen3.5-4b` | short mechanical jobs: tagging, cleanup, extraction | 16,384 | 1 | thinking off; a system message only as the first message |
 | `zimage` | an image from a prompt | – | 1 | 8 steps, CFG scale 1.0 |
 | `deepdml/faster-whisper-large-v3-turbo-ct2` | a transcript, German or English | – | – | – |

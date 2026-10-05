@@ -24,7 +24,7 @@ with 128 GB of unified memory:
 | reading a long prompt | about 1,200 tokens per second at any length |
 | one 768×1024 image | about 31 seconds |
 | speech in or out, a short sentence | under 3 seconds |
-| memory | 89 GiB of the GPU's 124 for the two text models, about 99 with the image model loaded, 106 at the peak of an image, 107.5 with every model busy at once |
+| memory | 89 GiB of the GPU's 124 for the chat model at its 131k window; 115 at the peak with every model busy at once |
 | weights on disk | 120 GiB |
 
 In the directory that should hold the jaki checkout, run:

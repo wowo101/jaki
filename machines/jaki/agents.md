@@ -12,7 +12,7 @@ client meets are in [`clients.md`](clients.md); read that first.
 | base URL | `http://<your address>:9090/v1`, the address jaki was installed with; on the machine itself too, because `127.0.0.1` answers nothing |
 | API key | any non-empty string |
 | model | `qnext` |
-| context window | 65,536 tokens |
+| context window | 131,072 tokens |
 | reasoning | yes, returned as `reasoning_content`; send `reasoning_effort` `low` or nothing, since `low` is the evaluated setting and the server's default |
 | output tokens per turn | at least 4,000, or a tool call can be lost inside the reasoning |
 | agents at once | 2; a third waits for one of them to finish |
@@ -37,7 +37,7 @@ model ids and context windows always match what is served. The provider, in
       "api": "openai-completions",
       "apiKey": "none",
       "models": [
-        { "id": "qnext", "contextWindow": 65536, "reasoning": true },
+        { "id": "qnext", "contextWindow": 131072, "reasoning": true },
         { "id": "qwen3.5-4b", "contextWindow": 16384 }
       ]
     }
@@ -52,7 +52,13 @@ The defaults, thinking level and compaction, in `~/.pi/agent/settings.json`:
   "defaultProvider": "jaki",
   "defaultModel": "qnext",
   "defaultThinkingLevel": "low",
-  "compaction": { "reserveTokens": 3072, "keepRecentTokens": 6000 }
+  "compaction": {
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000,
+    "modelOverrides": {
+      "jaki/qwen3.5-4b": { "reserveTokens": 3072, "keepRecentTokens": 6000 }
+    }
+  }
 }
 ```
 
@@ -62,9 +68,15 @@ every request, `medium` unless told otherwise, and that overrides the server's `
 per turn, which is enough for any tool call.
 
 A run without `--model` uses `defaultProvider` and `defaultModel`; so does Pi started by an
-editor over ACP. Pi compacts the conversation when it reaches the context window minus
-`reserveTokens`. Pi's default reserve is 16,384, the small model's whole window, so Pi would
-compact after every turn. With 3,072, compaction starts near 62k tokens on `qnext`.
+editor over ACP.
+
+**Compaction.** Pi compacts the conversation when it reaches the context window minus
+`reserveTokens`, and gives the summary it writes 80 % of the reserve, reasoning included. On
+`qnext` the reserve is Pi's default, 16,384: compaction starts near 115k tokens and the summary
+gets about 13k. A smaller reserve starves the summary; at 3,072 it got 2,457 tokens, ran out,
+and Pi kept no summary, so the next request overflowed the window and ended the run. The small
+model needs its own reserve under `modelOverrides`, keyed by provider and model id: 16,384 is
+its whole window, so Pi would compact after every turn.
 
 jaki reads earlier turns from cache whether or not the harness sends their reasoning back.
 

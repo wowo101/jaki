@@ -10,7 +10,7 @@ machine.
   installed with (`serve_url` in `machines/<hostname>.toml`); `127.0.0.1` answers nothing, even
   on the machine itself.
 - The `model` field is required and is the route. A wrong or missing id answers `404`.
-- `qnext`: chat, tools, images in, 65,536 tokens, two requests at once. Give a tool-calling turn
+- `qnext`: chat, tools, images in, 131,072 tokens, two requests at once. Give a tool-calling turn
   `max_tokens` of 4,000 or more. Send `reasoning_effort` `low` or none; `low` is what was
   evaluated.
 - `qwen3.5-4b`: short mechanical jobs, 16,384 tokens, no reasoning, one request at a time.
