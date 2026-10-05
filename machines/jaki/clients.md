@@ -51,9 +51,10 @@ answer without the reasoning. Sending earlier turns back with or without their
 `reasoning_content` makes no difference to speed: either way the whole conversation is read from
 cache.
 
-**`qnext` answers two requests at once**, at about 26 tokens a second each. Further requests
-wait in a queue, and with 16 waiting the next gets `429`. Every request reaches the model
-through the router, so all callers share that queue.
+**`qnext` answers two requests at once**, at about 26 tokens a second each. Up to 16 more wait in one queue, first come, first served, whoever sent them: the engine sees
+every request as coming from the router. Beyond that, `qnext` answers `429`, and so does the router past 18 requests in flight to
+`qnext` or 10 to any other model. How this plays out for chat, agent runs and batch
+jobs: *Sharing it* in the [guide](README.md).
 
 ## What is served, and what is not
 
@@ -75,7 +76,7 @@ Not served: embeddings, reranking, `/v1/completions`, and Anthropic's `/v1/messa
 | you see | because | do |
 |---|---|---|
 | a long wait on the first request | nothing loads until asked: `qnext` takes 25–30 s with its weights in the page cache, 65–95 s after a boot; `zimage` about 45 s after 15 idle minutes | set a client timeout of several minutes; the router holds a request up to 30 minutes for a load |
-| `429` from `qnext` | more than 16 requests waiting | back off and retry |
+| `429` | 16 requests already waiting for `qnext`, or more than 10 in flight to another model | back off and retry |
 | `503` with `"type": "server_busy"` on an image | the image would not fit beside what is running; the message says how much memory is free | retry once the other work finishes |
 | a slow answer from `qwen3.5-4b`, now and then a `5xx` | the small model pauses while an image generates; a request in that time waits for the image and a reload, and one arriving in the instant it unloads is cut | retry a `5xx`, up to three times |
 | `upstream command exited prematurely` | a model could not start: missing files, or no memory | `./jaki check`, then the logs in the guide |

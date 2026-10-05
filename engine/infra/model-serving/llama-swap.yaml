@@ -134,7 +134,7 @@ models:
       gufo serve --host 127.0.0.1 --port ${PORT} llm
       --model /models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
       --served-model-name qnext --context 131072 --sessions 2
-      --cache-ram-bytes 4294967296 --max-pending-per-client 16
+      --cache-ram-bytes 4294967296 --max-pending-per-client 16 --max-connections 24
       --speculative mtp --mtp-model /models/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf
       --mmproj /models/Qwen3.8-Flash-Next-mmproj-BF16.gguf
       --reasoning-effort low
@@ -142,6 +142,11 @@ models:
       --presence-penalty 0.0 --repeat-penalty 1.0
       --cache-disk /cache --cache-disk-staging-bytes 8589934592
     cmdStop: /usr/bin/podman stop -t 30 hatch-qnext
+    # The router lets this many requests be in flight to qnext and answers 429 past it; its own
+    # default is 10. 18 is gufo's 2 sessions plus its 16 queued, so the router stops admitting
+    # where gufo would. gufo answers 503 past --max-connections (default 16), hence 24 above:
+    # 18 requests, the router's readiness polls and its idle keep-alive connections.
+    concurrencyLimit: 18
     checkEndpoint: /ready
     env:
       - "HATCH_SWAP_ID=qnext"

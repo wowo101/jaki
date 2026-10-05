@@ -78,6 +78,9 @@ ExecStartPre=-/usr/bin/podman rm -f open-webui
 # cache and re-reads the rest every turn (WORK/model-serving.md, 2026-09-28). It also enables the
 # admin panel's model load and unload for that connection and a llama.cpp flag on *Continue*.
 # Single-quoted so systemd passes the JSON's double quotes through.
+# ENABLE_FOLLOW_UP_GENERATION=False: follow-up suggestions are one more request to the chat model
+# after every answer, in a queue every user shares (2026-10-05). Titles and tags stay on; they
+# cost one request each, after a conversation's first answer only.
 ExecStart=/usr/bin/podman run --rm --name open-webui \
   --network=host \
   -v open-webui:/app/backend/data \
@@ -88,6 +91,7 @@ ExecStart=/usr/bin/podman run --rm --name open-webui \
   -e 'OPENAI_API_CONFIGS={"0":{"provider":"llama.cpp"}}' \
   -e ENABLE_OLLAMA_API=False \
   -e ENABLE_PERSISTENT_CONFIG=False \
+  -e ENABLE_FOLLOW_UP_GENERATION=False \
   -e WEBUI_AUTH=True \
   -e ENABLE_SIGNUP=True \
   -e BYPASS_EMBEDDING_AND_RETRIEVAL=True \

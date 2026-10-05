@@ -165,6 +165,35 @@ a model from the table above. What a program may set per request, what it meets 
 is busy, and an example per modality: [`clients.md`](clients.md). Running Pi or another agent
 harness on jaki: [`agents.md`](agents.md).
 
+## Sharing it
+
+jaki serves a few people taking turns, or one agent run with some chat beside it.
+
+| model | answers at once | then |
+|---|---|---|
+| `qnext` | 2, at about 26 tokens a second each | up to 16 more wait; beyond that, `429` |
+| `qwen3.5-4b` | 1 | the rest wait; past 10 in flight, `429` |
+| `zimage` | 1, about 31 seconds an image | the next image waits for the one before |
+| speech | not measured | |
+
+- **Everyone shares one queue.** Requests wait first come, first served, whoever sent them. The
+  chat model sees every request as coming from the router, so it cannot take turns between
+  people.
+- **Chat.** Each answer in the chat surface is one request, and a conversation's first answer is followed
+by two more, for its title and its tags; follow-up suggestions are off. Two people whose answers generate at the
+  same moment get about 26 tokens a second each; a third person's answer starts when one of
+  them finishes.
+- **Agent runs.** A run with sub-agents fills both places (see [`agents.md`](agents.md)). Chat
+  then waits behind the run's requests: in one measured run, short requests waited 40 to 230
+  seconds behind long prompts. Run one agent run at a time.
+- **Batch jobs.** Send mechanical work to `qwen3.5-4b`. A batch on `qnext` takes both places
+  from everyone else.
+- **Long conversations.** A conversation the memory cache no longer holds comes back from the
+  disk cache in under a second. After an agent harness compacts a conversation, its start has
+  changed, and the whole prompt is read again: about 50 seconds at 60,000 tokens.
+- **Taking the GPU** with a `--resident stop` lease unloads every model, for everyone, until it
+  is released.
+
 ## Before you rely on it
 
 **The chat model's German is weak.** At its served reasoning effort, one German answer in five
