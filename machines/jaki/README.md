@@ -13,8 +13,10 @@ The name is Jaki Liebezeit's, the drummer of Can. He kept time so the others cou
 and was never the front; that is the relation this server has to the person using it. It also
 expands to *just another KI*, KI being the German for AI. Lowercase, always.
 
-> He left free jazz because it had too many rules, and built his style after being told to
-> play monotonously.
+> “A guy came to me and said, ‘You must play monotonous.’ … I started thinking about it. To play
+> monotonous, what did he mean? Monotonous. So I started to repeat things.”
+>
+> – Jaki Liebezeit, in *Krautrock: The Rebirth of Germany*, BBC Four, 2009
 
 ## What you get
 
