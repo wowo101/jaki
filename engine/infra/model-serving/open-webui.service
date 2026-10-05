@@ -1,0 +1,112 @@
+# hatch: Open WebUI – the browser chat surface, in front of llama-swap.
+#
+# systemd *user* unit, deployed by `hatch install`. Enable it yourself:
+#   systemctl --user enable --now open-webui
+# Health:  curl -fsS http://<address>:3000/health   (the address `serve_url` names; 127.0.0.1 is not bound)
+#
+# Binds the same address as the router and nothing else: the tailnet alone for a Tailscale
+# address, the LAN for a LAN address.
+#
+# THIS FILE NAMES NO MACHINE. Every address comes from `[endpoints].serve_url` in the
+# machine's own toml, through `engine/.hatch/resolved.env`, which `hatch install` writes and
+# symlinks to the EnvironmentFile below.
+#
+# --network=host because llama-swap binds a host address, and because every llama-server
+# here already runs under host networking inside a toolbox.
+#
+# Chat history, uploaded files and settings live in the `open-webui` podman volume. Back it
+# up by copying the volume, not the container.
+#
+# THE IMAGE IS PINNED TO A RELEASE TAG on the ExecStart line, its only home: `jaki` and
+# `owui-bringup` read it from there. How to bump it: README.md, "Open WebUI's settings".
+#
+# FILE UPLOADS GO INTO THE CONTEXT, NOT A VECTOR STORE. Open WebUI's default is to chunk,
+# embed and retrieve top-k, which silently truncates what the model sees. The two RAG_* /
+# BYPASS_* variables below turn that off. Verify it took after any image update:
+# Admin Settings → Documents → "Bypass Embedding and Retrieval" must be on.
+#
+# THIS FILE IS THE CONFIGURATION. `ENABLE_PERSISTENT_CONFIG=False` stops Open WebUI reading
+# its own database for settings: `Config.get` returns the value derived from the environment
+# here and never touches a row (backend/open_webui/models/config.py). Adopted 2026-09-10,
+# because the package installs in one gesture and a browser visit to seven fields
+# is not one gesture.
+#
+# WHAT THAT COSTS, and it is not nothing: a change made in Admin Settings applies immediately
+# and is GONE at the next restart – `Config.upsert` writes it into an in-memory dict when
+# persistence is off. So this file is the only durable place to change anything, and a setting
+# someone fixes in the browser will quietly revert. Edit here, then restart.
+#
+# Left in the database and now ignored: the rows seeded before this change, including two
+# audio base URLs pointing at api.openai.com. They do no harm and they are not the truth.
+#
+# AUDIO GOES TO THE SAME ADDRESS AS EVERYTHING ELSE, :9090, and the model names are the real
+# upstream ids because llama-swap aliases them onto its `speech` entry without rewriting.
+# English out is Kokoro (2026-09-10); German out is
+# `speaches-ai/piper-de_DE-thorsten-medium`, reachable by naming it and not wired here,
+# because Open WebUI holds exactly one TTS model. Speech IN is multilingual and needs no
+# switch.
+#
+# THE VOICE MUST BE ONE KOKORO KNOWS (`af_heart`, `am_michael`, …). Open WebUI asks its speech
+# server for a voice list at `{base}/audio/voices` with no model parameter, so llama-swap
+# cannot dispatch it and the call fails; the dropdown then falls back to OpenAI's own names,
+# which speaches rejects. Type the voice, do not pick it.
+
+[Unit]
+Description=hatch: Open WebUI chat surface (:3000)
+After=network-online.target tailscaled.service llama-swap.service
+Wants=llama-swap.service
+
+# Restart=on-failure exists for the first bind at boot, which fails before the address is
+# assignable and succeeds on restart 1. It must not run a refused start forever: an empty
+# address fails ExecStartPre with 78 every RestartSec, and the default burst (5 in 10 s) never
+# trips at that pace. Five failures in ten minutes is the give-up point.
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/hatch/env
+# REFUSE TO START ON AN EMPTY ADDRESS, and note what an empty one would do rather than fail:
+# HOST= makes Open WebUI bind 0.0.0.0, which with ENABLE_SIGNUP=True puts an open sign-up page
+# on the LAN, and OPENAI_API_BASE_URLS= falls back to api.openai.com, so the chat surface
+# points at the internet. Both are silent; the unit reports `active`.
+ExecStartPre=/bin/sh -c 'test -n "$HATCH_SERVE_HOST" -a -n "$HATCH_SERVE_URL" || { echo "HATCH_SERVE_HOST or HATCH_SERVE_URL is empty: run hatch install, and check [endpoints].serve_url" >&2; exit 78; }'
+ExecStartPre=-/usr/bin/podman rm -f open-webui
+# OPENAI_API_CONFIGS marks connection 0 as a llama.cpp provider, which makes Open WebUI send each
+# earlier answer's reasoning back as `reasoning_content` (`get_reasoning_format`, 0.11.4). Without
+# it the answer goes back alone, and gufo then reuses only the first message of a chat from its
+# cache and re-reads the rest every turn (WORK/model-serving.md, 2026-09-28). It also enables the
+# admin panel's model load and unload for that connection and a llama.cpp flag on *Continue*.
+# Single-quoted so systemd passes the JSON's double quotes through.
+ExecStart=/usr/bin/podman run --rm --name open-webui \
+  --network=host \
+  -v open-webui:/app/backend/data \
+  -e PORT=3000 \
+  -e HOST=${HATCH_SERVE_HOST} \
+  -e OPENAI_API_BASE_URLS=${HATCH_SERVE_URL} \
+  -e OPENAI_API_KEYS=hatch-local \
+  -e 'OPENAI_API_CONFIGS={"0":{"provider":"llama.cpp"}}' \
+  -e ENABLE_OLLAMA_API=False \
+  -e ENABLE_PERSISTENT_CONFIG=False \
+  -e WEBUI_AUTH=True \
+  -e ENABLE_SIGNUP=True \
+  -e BYPASS_EMBEDDING_AND_RETRIEVAL=True \
+  -e RAG_FULL_CONTEXT=True \
+  -e WEBUI_URL=${HATCH_WEBUI_URL} \
+  -e AUDIO_STT_ENGINE=openai \
+  -e AUDIO_STT_OPENAI_API_BASE_URL=${HATCH_SERVE_URL} \
+  -e AUDIO_STT_OPENAI_API_KEY=hatch-local \
+  -e AUDIO_STT_MODEL=deepdml/faster-whisper-large-v3-turbo-ct2 \
+  -e AUDIO_TTS_ENGINE=openai \
+  -e AUDIO_TTS_OPENAI_API_BASE_URL=${HATCH_SERVE_URL} \
+  -e AUDIO_TTS_OPENAI_API_KEY=hatch-local \
+  -e AUDIO_TTS_MODEL=speaches-ai/Kokoro-82M-v1.0-ONNX \
+  -e AUDIO_TTS_VOICE=af_heart \
+  -e AUDIO_TTS_API_KEY=hatch-local \
+  ghcr.io/open-webui/open-webui:v0.11.4
+ExecStop=/usr/bin/podman stop -t 20 open-webui
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target

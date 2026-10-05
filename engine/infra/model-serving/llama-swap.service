@@ -1,0 +1,69 @@
+# hatch: llama-swap – the box's one serving address.
+#
+# systemd *user* unit, deployed by `hatch install` together with llama-swap.yaml ->
+# ~/.config/llama-swap/config.yaml. Enable it yourself:
+#   systemctl --user enable --now llama-swap
+# Health:  curl -fsS $HATCH_SERVE_URL/models   (the tailnet address it binds; NOT loopback)
+#
+# THIS FILE NAMES NO MACHINE. The address comes from `[endpoints].serve_url` in the machine's
+# own toml, through `engine/.hatch/resolved.env`, which `hatch install` writes and symlinks to
+# the path below. That is what lets a second machine install without editing this file.
+#
+# Binds the one address `serve_url` names and nothing else. A Tailscale address makes it
+# reachable from the tailnet alone, with traffic encrypted by the WireGuard tunnel; a LAN
+# address makes it reachable from the LAN, in plain HTTP. No API key is checked.
+#
+# The alternative, `tailscale serve` (TLS + the ts.net hostname), needs HTTPS serve enabled
+# once per tailnet in the admin console. Binding the tailnet IP needs nothing.
+#
+# OWNERSHIP OF THE GPU. Since 2026-09-08 this unit holds the whole serving tier – the
+# resident, the delegate and the image server, all three loaded at once in one non-swapping
+# group – so nothing else on the box serves a model and there is nothing to fight with.
+# `hatch-llama-server.service` was deleted with the 35B it carried. A leased eval still
+# takes the box: `gpu-lease --resident stop` reclaims this unit's memory through the
+# router's own /api/models/unload and gives it back on release.
+
+[Unit]
+Description=hatch: llama-swap – the serving tier on one address (:9090)
+After=network-online.target tailscaled.service
+
+# Restart=on-failure exists for the first bind at boot, which fails before the address is
+# assignable and succeeds on restart 1. It must not run a refused start forever: an empty
+# address fails ExecStartPre with 78 every RestartSec, and the default burst (5 in 10 s) never
+# trips at that pace. Five failures in ten minutes is the give-up point.
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# HATCH_SERVE_ADDR, and HATCH_HOME for the paths inside llama-swap.yaml, which llama-swap
+# resolves as `${env.…}` out of its own process environment. No `-`: a missing file here would
+# start a router that binds nothing useful and reads a config full of unset macros, and failing
+# to start is the better of the two.
+EnvironmentFile=%h/.config/hatch/env
+# REFUSE TO START ON AN EMPTY ADDRESS. systemd expands an unset ${VAR} to an EMPTY ARGUMENT
+# and not to nothing, and llama-swap answers an empty --listen by defaulting to `:8080` and
+# binding 0.0.0.0 – off the tailnet-only posture, on a port nothing checks, and reporting
+# `active` throughout. Restart=on-failure never fires, because nothing failed.
+ExecStartPre=/bin/sh -c 'test -n "$HATCH_SERVE_ADDR" || { echo "HATCH_SERVE_ADDR is empty: run hatch install, and check [endpoints].serve_url in this machine'"'"'s toml" >&2; exit 78; }'
+# Each spawned llama-server writes its own log here (--log-file in llama-swap.yaml), because
+# llama-swap forwards none of a child's output to its own stdout and the unit journal
+# therefore carries nothing a served model says. llama-server does not create a missing
+# parent directory - it exits - so this runs before the router can spawn anything.
+ExecStartPre=/bin/mkdir -p %h/.local/state/llama-swap-logs
+# gufo's prefix cache on disk, bind-mounted into the resident's container; podman refuses a
+# bind mount whose source does not exist.
+ExecStartPre=/bin/mkdir -p %h/.local/state/gufo-cache
+ExecStart=%h/.local/bin/llama-swap --config %h/.config/llama-swap/config.yaml --listen ${HATCH_SERVE_ADDR}
+# A GPU container entry stops through its own cmdStop (`podman stop -t 30`), which the user
+# manager's 10 s default would cut short with SIGKILL, and a `podman run` killed that way leaves
+# its container running in its own libpod scope with 84 GiB held. The longer timeout lets the
+# cmdStop finish; the stop-post removes whatever container of the router's is left, from the
+# same list the guard reads. hatch-serving-guard also removes an entry's orphan before a start.
+TimeoutStopSec=45
+ExecStopPost=-/bin/sh -c '. "$HATCH_REPO/engine/lib/gpu-binaries.env" && [ -n "$HATCH_CHAT_CONTAINERS" ] && /usr/bin/podman rm -f -t 10 $HATCH_CHAT_CONTAINERS'
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

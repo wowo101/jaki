@@ -1,0 +1,31 @@
+[Unit]
+Description=hatch: hold the GGUF store at engine/models.toml's [[weights]]
+# Restart=on-failure below exists for a boot race and must not become a permanent flap. A
+# fetch that cannot succeed – a pin upstream no longer serves, a repo that became gated –
+# fails every run, and at RestartSec=60 the default burst (5 starts in 10 s) never trips, so
+# the unit retries once a minute forever, taking a sleep:idle inhibitor each pass and stopping
+# the box ever powering itself off. Five failures inside an hour is the give-up point instead.
+StartLimitIntervalSec=1h
+StartLimitBurst=5
+
+[Service]
+# simple + Restart=on-failure: at boot the first start can fail before logind/network
+# are ready (observed 2026-07-12: instant status=1 at user-manager start) — retry a
+# minute later instead of staying dead. Clean completion (exit 0) does NOT restart.
+Type=simple
+Restart=on-failure
+RestartSec=60
+# systemd-inhibit holds a sleep+idle block for the download's duration, so the box
+# stays reachable and the pull doesn't pause mid-file (WoL-over-WiFi is unreliable —
+# don't let it sleep while downloading). Lock releases when the download completes.
+# The log directory is created here, in the shell, and NOT by ExecStartPre or by
+# `StandardOutput=append:`. systemd does not create an append: target's parent and
+# applies the same stdout to every Exec* line, so on a machine without the directory
+# BOTH die at exec with 209/STDOUT — and with Restart=on-failure that is a silent
+# 60-second retry loop whose whole diagnostic is the log it cannot open. Measured on
+# the box 2026-08-23. Output goes to the journal until the redirect takes over, so a
+# failure before it is visible rather than lost.
+ExecStart=/bin/bash -c 'mkdir -p %h/.local/share/box-model-eval && exec /usr/bin/systemd-inhibit --what=sleep:idle --who=box-model-eval --why=candidate-download %h/.local/bin/download-candidates >> %h/.local/share/box-model-eval/download.log 2>&1' 
+
+[Install]
+WantedBy=default.target

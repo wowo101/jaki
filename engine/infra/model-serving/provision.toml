@@ -1,0 +1,34 @@
+kind = "app"
+# The box's serving tier: llama-swap routing between every model the box serves – text,
+# the delegate, images and speech – Open WebUI in front of it, and the OOM interlock that
+# keeps a model the box cannot hold from being loaded at all. Listed as [artefacts].infra on the box; the app strategy
+# applies because what lands machine-side is shims, units and one config file.
+requires = ["bash", "curl", "tar", "unzip", "python3"]
+needs    = []
+
+# hatch-serving-guard MUST reach PATH as a SYMLINK: it resolves
+# engine/lib/gpu-binaries.env from `readlink -f "$0"`, so a copy silently loses the
+# shared binary list – the drift that file exists to end. Every strategy here
+# symlinks, so this holds by construction.
+# speaches-models.sh is on PATH because it is a hand gesture, not a unit: the speech
+# container runs HF_HUB_OFFLINE, so this is the only way its weights arrive, and it is run
+# once at install and again whenever the declared set changes.
+bin = ["hatch-serving-guard", "hatch-image-front", "hatch-pressure-watch", "owui-bringup.sh", "pull-image-resumable.sh", "speaches-models.sh", "serving-binaries.sh"]
+
+# Enabled by naming them in the box's `[units].enabled`; a service is enabled
+# without being started, so it comes up at the next boot rather than mid-install.
+# Both bind the box's tailnet address. The units carry `After=tailscaled.service`, which
+# orders against tailscaled STARTING and not against the address becoming assignable, so it
+# does not prevent the bind failing at boot. What actually recovers them is `Restart=on-failure`
+# with `RestartSec=10`: measured on every boot in the journal, llama-swap loses its first bind
+# with `cannot assign requested address` and succeeds on restart 1. Do not remove the restart
+# as redundant to the ordering; the ordering is the part that does not work.
+units = ["llama-swap.service", "open-webui.service", "hatch-pressure-watch.service"]
+
+# llama-swap reads its config from a path of its own choosing, which no other
+# strategy can derive. A symlink serves: the ExecStart passes --config and NOT
+# -watch-config, so the file is read once at startup and the inode is never
+# watched. Editing the repo file and restarting the unit is the update path.
+[[files]]
+source = "llama-swap.yaml"
+dest   = "~/.config/llama-swap/config.yaml"

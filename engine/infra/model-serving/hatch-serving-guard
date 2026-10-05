@@ -1,0 +1,449 @@
+#!/usr/bin/env bash
+# hatch-serving-guard – refuse to load a model the box cannot currently hold.
+#
+# Called hatch-chat-guard until 2026-09-09, when the directory it lives in became
+# engine/infra/model-serving/: it guards the whole serving tier, not a chat surface.
+#
+# Wraps every GPU entry in llama-swap.yaml: llama-server, the image front, and a `podman run`
+# of a GPU container. Exits non-zero instead of loading, which llama-swap surfaces to the
+# caller as a failed model start. Before refusing for memory it unloads the idle entries in
+# HATCH_UNLOAD_ORDER and checks again. `test-serving-guard.sh` beside it covers the container
+# sizing and that unload against fakes.
+#
+# The box has a ~102 GiB practical ceiling (engine/models.toml) and ds4-class models take
+# 97-113 GiB. A second concurrent load therefore does not queue and does not fail politely:
+# it triggers a GLOBAL OOM that kills both llama-servers plus unrelated user processes, and
+# neither side's log names the other, so each looks like a self-inflicted config bug.
+#
+# Install (from this directory – realpath makes a mis-cwd fail loudly, not link to nowhere):
+#   ln -sfn "$(realpath hatch-serving-guard)" ~/.local/bin/hatch-serving-guard
+set -u
+
+GUARD_MARGIN_GIB="${GUARD_MARGIN_GIB:-8}"    # KV cache, compute buffers, slack
+
+# What holds the GPU is defined once, in engine/lib/gpu-binaries.env, shared with gpu-lease
+# and the taskboard. Deployed as a SYMLINK into the checkout (not a copy) precisely so this
+# resolves – a copied guard drifts from the repo silently, and a hand-kept copy of the
+# list is what let this and the lease disagree about a serving engine for a week.
+# Captured before sourcing, because the file assigns unconditionally: an override in the
+# environment wins, the same precedence gpu-lease applies – including an EXPLICITLY EMPTY
+# one, which is a machine saying it has no resident units rather than saying nothing.
+ENV_RESIDENTS="${HATCH_RESIDENTS:-}"
+ENV_RESIDENTS_SET="${HATCH_RESIDENTS+set}"
+GUARD_SELF=$(dirname "$(readlink -f "$0")")
+GPU_BINARIES="${HATCH_GPU_BINARIES:-$GUARD_SELF/../../lib/gpu-binaries.env}"
+if [ -r "$GPU_BINARIES" ]; then
+  . "$GPU_BINARIES"
+else
+  # Fail CLOSED. Without the names this cannot tell an idle box from one holding 99 GiB,
+  # and a guard that wrongly exempts is worse than one that wrongly refuses.
+  echo "hatch-serving-guard: REFUSING – cannot read $GPU_BINARIES, which defines what holds the GPU." >&2
+  exit 97
+fi
+
+# --- 0. Hold a paused model's start while an image generates ------------------------------
+# `hatch-image-front` writes the marker for the length of one generation and unloads the
+# models in HATCH_IMAGE_PAUSES first, because an image's peak is the box's tightest moment.
+# A request for one of them meanwhile reaches llama-swap, which starts it through this guard;
+# the start waits here, so the caller gets a slower answer and not an error – llama-swap
+# reports a refused start only as "upstream command exited prematurely", which no caller can
+# act on. The marker counts only while its writer is alive and for at most IMAGE_WAIT_S, so a
+# crashed front cannot hold the delegate for ever. HATCH_SWAP_ID is set per entry in
+# llama-swap.yaml's `env:`.
+IMAGE_MARKER="${HATCH_IMAGE_MARKER:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hatch/image-generating}"
+IMAGE_WAIT_S="${GUARD_IMAGE_WAIT_S:-180}"   # per image: up to 60 s for idle, then 30-74 s to generate
+image_generating() {
+  [ -f "$IMAGE_MARKER" ] || return 1
+  local pid
+  pid=$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$IMAGE_MARKER" 2>/dev/null)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  # A writer that died but was not yet reaped still answers kill -0; its state letter is Z.
+  ! awk '{ sub(/^.*\) /, ""); exit ($1 == "Z") ? 0 : 1 }' "/proc/$pid/stat" 2>/dev/null
+}
+case " ${HATCH_IMAGE_PAUSES:-} " in
+  *" ${HATCH_SWAP_ID:-.} "*)
+    # The cap is per image, timed from the marker's own `started`: queued images each rewrite
+    # the marker, and a cap on the total hold refused the delegate after a few ordinary
+    # images in a row – the very error this step exists to spare its callers.
+    waited=0
+    while image_generating; do
+      [ "$waited" = 0 ] && echo "hatch-serving-guard: ${HATCH_SWAP_ID} is paused while an image generates; holding its start." >&2
+      started=$(sed -n 's/.*"started": *\([0-9][0-9]*\).*/\1/p' "$IMAGE_MARKER" 2>/dev/null)
+      if [ -n "$started" ] && [ $(( $(date +%s) - started )) -ge "$IMAGE_WAIT_S" ]; then
+        echo "hatch-serving-guard: REFUSING – one image has been generating for over ${IMAGE_WAIT_S}s; ${HATCH_SWAP_ID} stays paused. Marker: $IMAGE_MARKER" >&2
+        exit 96
+      fi
+      sleep 1; waited=$((waited + 1))
+    done
+    [ "$waited" -gt 0 ] && echo "hatch-serving-guard: images done after ${waited}s; starting ${HATCH_SWAP_ID}." >&2
+    ;;
+esac
+
+# Is a lease handing the box back right now? Asked of the lease, which owns the sidecar and
+# the window. Anything other than a clean `yes` is `no`: a missing verb, a timeout, or a
+# deployed copy too old to know the flag must not read as a licence to skip the scan.
+lease_restoring() {
+  command -v hatch >/dev/null 2>&1 || return 1
+  [ "$(timeout 5 hatch gpu-lease status --restoring --local 2>/dev/null)" = yes ]
+}
+
+# Names the gpu-lease holder in a refusal. Diagnostic only, never a gate: the lease is
+# advisory (engine/tools/gpu-lease/README.md) and the checks below are what protect. If
+# `hatch` is missing or slow the refusal simply loses a line, so every failure returns 0.
+lease_line() {
+  command -v hatch >/dev/null 2>&1 || return 0
+  local out
+  out=$(timeout 5 hatch gpu-lease status 2>/dev/null | head -1) || return 0
+  case "$out" in
+    "lease: HELD"*|"lease: STALE"*) echo "  gpu-lease: ${out#lease: }" >&2 ;;
+  esac
+}
+
+# --- 1. Another owner of the GPU is a hard stop -------------------------------------------
+# Detected by what a competitor IS, never by what its unit is called. Eval units are named
+# per-experiment and multiply freely (hatch-llama-ds4ab, hatch-llama-q2, dsparkab2, …), so any
+# hand-maintained name list silently stops matching and the diagnostic goes quiet while the
+# memory check below carries the protection alone.
+
+# The stable co-tenants are a TIER, not a unit, and the tier is defined in the shared file
+# with everything else: `unit:port:gguf:container` per entry, this guard reading the
+# container and the port. A resident is a benign co-tenant rather than a competitor, so a
+# missing entry costs a false refusal (exit 97) rather than a missed one.
+#
+# The container may be empty for a resident whose unit is not yet stood up. Identity then
+# falls back to the port, which is safe here for the same reason the port-only fallback
+# below is: the exemption also requires that unit to be ACTIVE, and two servers cannot bind
+# one port – so if the co-resident's unit is up and something holds :8083, that is it.
+RESIDENTS=()
+[ -n "$ENV_RESIDENTS_SET" ] && HATCH_RESIDENTS="$ENV_RESIDENTS"
+[ -n "${HATCH_RESIDENTS:-}" ] && read -ra RESIDENTS <<< "$HATCH_RESIDENTS"
+ROUTER_UNIT=llama-swap.service             # our own parent; its cgroup marks the models it spawns
+
+res_unit() { printf '%s' "${1%%:*}"; }
+res_port() { local e=${1#*:}; printf '%s' "${e%%:*}"; }
+res_cont() { [ -z "${1##*:*:*:*}" ] && printf '%s' "${1##*:}"; return 0; }
+
+# Resolved once: this loop runs per resident per llama-server pid, and `podman inspect` is
+# not free on a box that is already under memory pressure.
+resident_all_units=""
+resident_active_units=""
+declare -A resident_cid_of=()
+for r in ${RESIDENTS[@]+"${RESIDENTS[@]}"}; do
+  u=$(res_unit "$r"); c=$(res_cont "$r")
+  resident_all_units="$resident_all_units $u"
+  systemctl --user is-active --quiet "$u" && resident_active_units="$resident_active_units $u"
+  [ -n "$c" ] && resident_cid_of["$u"]=$(podman inspect --format '{{.Id}}' "$c" 2>/dev/null)
+done
+is_resident_unit() { case "$resident_all_units " in *" $1 "*) return 0 ;; esac; return 1; }
+
+resident_note=""          # human-facing, may name more than one
+resident_stop_units=""    # what the exit-98 message tells you to stop
+own_note=""
+
+# (a) A llama-server that is neither in one of our chat containers nor spawned by our own
+#     router. Two shapes because llama-swap has two: a toolbox entry lands in the container's
+#     cgroup, while the pinned-fork entry is a plain host binary and lands in llama-swap's own
+#     – indistinguishable from an eval's by name, since both are `llama-server` on the host.
+# Which containers are ours comes from gpu-binaries.env, the same file as the binary names
+# and the same list gpu-lease reads. It was hand-kept here and there, and a container in one
+# copy only either refuses every chat load (missing here) or headlines sanctioned use as a
+# NO LEASE violation (missing there). Counted as ours, step 2 rules on such a server by
+# memory.
+# Unquoted on purpose – the value is a space-separated list of container names.
+# shellcheck disable=SC2086
+ours=$(podman inspect --format '{{.Id}}' ${HATCH_CHAT_CONTAINERS:-} 2>/dev/null)
+foreign=""
+# `sd-server` (stable-diffusion.cpp, the image entry) is a GPU holder like any llama-server –
+# a scanner keyed on one binary name is blind to the next binary (box-contention, 2026-08-21).
+# pgrep -x takes an ERE, so the alternation matches either exact name; gpu-lease's GPU_PROC
+# carries the same alternation.
+for pid in $(pgrep -x "$HATCH_GPU_SERVERS" 2>/dev/null); do
+  cg=$(cat "/proc/$pid/cgroup" 2>/dev/null) || continue
+  mine=0
+  case "$cg" in *"/$ROUTER_UNIT"*) mine=1 ;; esac
+  for id in $ours; do case "$cg" in *"$id"*) mine=1 ;; esac; done
+
+  # sd-server spells it --listen-port; llama-server spells it --port.
+  port=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | grep -A1 -xE -- '--port|--listen-port' | tail -1)
+
+  # One of ours, still resident. Normally llama-swap has unloaded it before we run, so this
+  # means a swap is still in flight – step 2 rules, and it must be able to say what is holding
+  # the memory rather than reporting nothing recognisable while 99 GiB of our own model sits there.
+  if [ "$mine" = 1 ]; then
+    own_note="a chat model this surface already has loaded (pid $pid, :${port:-?})"
+    continue
+  fi
+  cid=$(printf '%s' "$cg" | grep -o 'libpod-[0-9a-f]\{12,\}' | head -1 | cut -c8-)
+  cname=$(podman ps --format '{{.ID}} {{.Names}}' 2>/dev/null | awk -v c="$cid" 'index(c,$1)==1 {print $2; exit}')
+
+  # A resident is a known, benign co-tenant: it may coexist when memory permits, so let
+  # step 2 rule on it rather than refusing outright. Identity is the container plus the port,
+  # not the port alone – otherwise anything that happens to bind 8081 inherits the exemption
+  # and the exit-98 message then prescribes a stop that frees nothing. If the container cannot
+  # be resolved, fall back to the port so a renamed container degrades to the old behaviour.
+  is_resident=0
+  for r in ${RESIDENTS[@]+"${RESIDENTS[@]}"}; do
+    ru=$(res_unit "$r")
+    [ "$port" = "$(res_port "$r")" ] || continue
+    case "$resident_active_units " in *" $ru "*) ;; *) continue ;; esac
+    rcid=${resident_cid_of[$ru]:-}
+    if [ -n "$rcid" ]; then
+      case "$cg" in *"$rcid"*) ;; *) continue ;; esac
+    fi
+    resident_note="${resident_note:+$resident_note and }the resident (${ru%.service}, :$port)"
+    resident_stop_units="$resident_stop_units $ru"
+    is_resident=1
+    break
+  done
+  [ "$is_resident" = 1 ] && continue
+  foreign="${foreign}    pid $pid  container ${cname:-${cid:0:12}}  port ${port:-?}"$'\n'
+done
+
+# (b) An eval driver that is live between arms – its server is momentarily down, but it is
+#     about to reload and the memory check cannot see a load that has not happened yet.
+#
+#     A unit counts when it actually reaches the GPU: either its ExecStart invokes a GPU
+#     binary directly, or it runs a script that does. Matching the box-model-eval directory
+#     alone is too broad - it catches reporting and download units (taskboard) that
+#     never touch the GPU, and refusing on those would block chat for no reason.
+# Require the name in COMMAND POSITION – followed by a closing quote, a flag, or the end of
+# the line. Matching any mention is a different and wrong test: `note-transcribe`'s docstring
+# names llama-server in prose, and its timer unit is enabled, so a bare name match refused
+# every chat load for as long as a voice-note sweep ran, blaming an "eval driver". It also
+# excludes `hatch-llama-server.service`, which is a unit reference rather than an invocation.
+# A driver this misses degrades the message, not the protection: step 2 still refuses on size.
+GPU_BINS="($HATCH_GPU_SERVERS|$HATCH_GPU_TOOLS)([\"']|[[:space:]]+-|[[:space:]]*\\\\?\$)"
+drivers=""
+while read -r u; do
+  case "$u" in llama-swap.service|open-webui.service) continue ;; esac
+  is_resident_unit "$u" && continue
+  es=$(systemctl --user show "$u" -p ExecStart --value 2>/dev/null)
+
+  # A unit whose command IS the lease verb or the dispatcher is skipped ONLY while a lease is
+  # handing the box back. Two measured reasons for skipping at all: gpu-lease necessarily
+  # NAMES every GPU binary, so grepping its source marked every leased unit a driver and a 4 h
+  # `migrate --resident serve` lease closed the chat surface; and the command a lease WRAPS
+  # names GPU binaries because that is what a leased job runs, while the unit stays ACTIVE
+  # through the lease's own restore. On 2026-09-10 a `--resident stop` lease wrapping
+  # `apepojken-plain-control.sh` could not bring its residents back, because this scan refused
+  # the restore that that very unit was performing.
+  #
+  # THE CONDITION IS `--restoring`, NOT `--takes-box`. Both answer `no` for a `--resident keep`
+  # or `serve` lease, and such a lease drives the GPU with its server DOWN between arms - the
+  # exact window this scan was written for. Skipping its unit unconditionally left that window
+  # with no signal at all: `foreign` sees no process, `--takes-box` says no by design, and the
+  # memory check reads free. `--restoring` is true only inside the handover.
+  case "$es" in
+    *path=*)
+      # PER OCCURRENCE. `--value` renders one `{ path=… ; argv[]=… }` group per ExecStart line,
+      # and taking only the first would skip a unit whose second ExecStart is a GPU binary.
+      lease_unit=1
+      rest=$es
+      while [ -z "${rest##*path=*}" ]; do
+        rest=${rest#*path=}
+        c=${rest%% *}
+        case "${c##*/}" in gpu-lease|gpu_lease.py|hatch) ;; *) lease_unit=0; break ;; esac
+      done
+      if [ "$lease_unit" = 1 ] && lease_restoring; then continue; fi
+      ;;
+  esac
+
+  if printf '%s' "$es" | grep -qE "$GPU_BINS"; then
+    drivers="$drivers $u"
+    continue
+  fi
+  # `--value` renders the command as `{ path=/x ; argv[]=/x -f ; … }`, so argv[0] only ever
+  # appears glued to a `path=`/`argv[]=` prefix. Strip them, or a unit launched as
+  # `systemd-run --unit=x /path/probe.sh` is invisible to this check.
+  for tok in $es; do
+    tok=${tok#path=}
+    case "$tok" in 'argv[]='*) tok=${tok#'argv[]='} ;; esac
+    [ -f "$tok" ] || continue
+    if grep -qE "$GPU_BINS" "$tok" 2>/dev/null; then
+      drivers="$drivers $u"
+      break
+    fi
+  done
+done < <(systemctl --user list-units --type=service --state=active --plain --no-legend --no-pager 2>/dev/null | awk '{print $1}')
+
+# A held lease is the authoritative "something is about to load a model" signal, and it says
+# which kind: `--resident stop` means the holder took the box, so its server is coming back
+# between arms and the memory check cannot see a load that has not happened yet. `serve` and
+# `keep` are co-tenancy – a batch job holds one for hours precisely so the resident
+# stays up for it – and must not close the chat surface.
+# Asked of the lease as a question, never read out of its output: `--takes-box` prints
+# `yes`/`no` and exits 0/1, and reads only the lock and the sidecar, so it costs the chat
+# load path no process scan. The word is what is tested rather than the exit status alone,
+# because anything else – a missing verb, a timeout, a deployed verb too old to know the
+# flag – also exits non-zero, and "no answer" must not read as "no lease".
+lease_takes_box() {
+  command -v hatch >/dev/null 2>&1 || return 1
+  local out
+  out=$(timeout 5 hatch gpu-lease status --takes-box --local 2>/dev/null)
+  case "$out" in
+    yes) return 0 ;;
+    no)  return 1 ;;
+    *)   # Not a refusal: a slow `status` on a loaded box must not brick the surface.
+         echo "hatch-serving-guard: gpu-lease status --takes-box answered '${out:-nothing}' in 5 s – proceeding without the lease signal." >&2
+         return 1 ;;
+  esac
+}
+# Only consulted when nothing above already decided the refusal: a decided refusal prints
+# the holder via lease_line anyway, and a second full status scan costs seconds on a box
+# that is by definition busy.
+lease_note=""
+if [ -z "$foreign" ] && [ -z "$drivers" ] && lease_takes_box; then
+  lease_note="a gpu-lease holder took the box (--resident stop); its server returns between arms."
+fi
+
+if [ -n "$foreign" ] || [ -n "$drivers" ] || [ -n "$lease_note" ]; then
+  # GTT, not per-process RSS: these models are allocated on the GPU, so VmRSS reads near zero
+  # for a server holding 99 GiB and is worse than no number at all.
+  gtt=$(awk '{printf "%.1f", $1/1073741824}' /sys/class/drm/card1/device/mem_info_gtt_used 2>/dev/null)
+  echo "hatch-serving-guard: REFUSING – something else owns the GPU${gtt:+ (GTT ${gtt} GiB committed)}." >&2
+  [ -n "$foreign" ] && { echo "  llama-server(s) running outside this chat surface:" >&2; printf '%s' "$foreign" >&2; }
+  [ -n "$drivers" ] && echo "  active eval driver unit(s):$drivers" >&2
+  [ -n "$lease_note" ] && echo "  $lease_note" >&2
+  lease_line
+  echo "hatch-serving-guard: wait for it to finish, then retry." >&2
+  exit 97
+fi
+
+# --- 2. Size the request against what is actually free -----------------------------------
+# llama.cpp loads every shard of a split GGUF, so glob the whole set from the -00001-of- name.
+# A speculative drafter is loaded alongside the target and is not small – ds4's was ~11 GiB,
+# a tenth of the ceiling. sd-server carries no -m at all: its weights arrive split across
+# --diffusion-model + --llm + --vae, and a vision-capable entry adds --mmproj – every one of
+# them is resident at once, so all are summed.
+#
+# BOTH SPELLINGS OF THE DRAFT. llama.cpp takes the draft model as `-md` or `--model-draft`;
+# `--spec-draft-model` alone was the whole list until 2026-09-08, and the resident passes
+# `-md`, so its 2.4 GiB draft was silently unsized. Matching the flags a serve line actually
+# uses is the only version of this check that measures anything.
+model=""; draft=""; weights=(); prev=""
+for a in "$@"; do
+  case "$prev" in
+    -m|--model)                                  [ -z "$model" ] && model="$a" ;;
+    -md|--model-draft|--spec-draft-model)        [ -z "$draft" ]  && draft="$a" ;;
+    --diffusion-model|--llm|--vae|--mmproj)      weights+=("$a") ;;
+  esac
+  prev="$a"
+done
+
+shards() {
+  case "$1" in
+    *-00001-of-*) printf '%s\n' "${1%-00001-of-*}"-*.gguf ;;
+    *)            printf '%s\n' "$1" ;;
+  esac
+}
+
+# A CONTAINER ENTRY IS SIZED FROM THE REGISTRY. Its weight paths are paths inside the container,
+# and what it holds is not what its files weigh: gufo's 104 GiB of Flash-Next holds 84 GiB
+# resident, because the n-gram table is read from disk. So a `podman run` entry is sized by
+# `resident_gib` in the `[models.<key>.serve]` block whose `swap_id` is this entry's
+# HATCH_SWAP_ID, and one with no such key is refused – an unsized container is the load this
+# guard exists to catch.
+size_gib=""; sized_by=""; removed=""
+if [ "${1##*/}" = podman ]; then
+  # shellcheck source=../../lib/registry.sh
+  . "$GUARD_SELF/../../lib/registry.sh"
+  if registry_read resident-gib; then
+    for row in "${REGISTRY_ROWS[@]}"; do
+      IFS="$REGISTRY_SEP" read -r sid gib <<< "$row"
+      [ "$sid" = "${HATCH_SWAP_ID:-}" ] && size_gib=$(awk -v g="$gib" 'BEGIN{i=int(g); print (g>i)?i+1:i}')
+    done
+  fi
+  if [ -z "$size_gib" ]; then
+    echo "hatch-serving-guard: REFUSING – a container entry ('${HATCH_SWAP_ID:-no HATCH_SWAP_ID}') with no resident_gib in $REGISTRY_PATH, so its size is unknown." >&2
+    exit 98
+  fi
+  sized_by="resident_gib $size_gib from the registry"
+  model=""; weights=()                     # container paths; nothing on this side to stat
+  # AN ORPHAN OF THIS ENTRY IS REMOVED BEFORE SIZING. The router is starting this entry, so a
+  # container already carrying its --name is a previous instance the router has lost: a
+  # `podman run` killed before its container stopped leaves the server running in its own
+  # libpod scope, holding its memory, with nothing left to remove it. Sized with it in place,
+  # the start would be refused for the memory the orphan holds, and the `--replace` that would
+  # clear it runs only after this guard.
+  cname=""; prev=""
+  for a in "$@"; do [ "$prev" = --name ] && cname=$a; prev=$a; done
+  if [ -n "$cname" ] && podman container exists "$cname" 2>/dev/null; then
+    podman rm -f -t 10 "$cname" >/dev/null 2>&1 && removed=" $cname (an orphan of this entry)"
+    echo "hatch-serving-guard: removed${removed:- nothing – podman rm failed for $cname}." >&2
+  fi
+fi
+
+files=()
+if [ -n "$model" ] && [ -f "$model" ]; then
+  mapfile -t files < <(shards "$model")
+  [ -n "$draft" ] && [ -f "$draft" ] && mapfile -t -O "${#files[@]}" files < <(shards "$draft")
+fi
+# Through shards() like -m and the drafter: a future split --diffusion-model must not be
+# sized by its first shard alone. A missing file degrades the sizing, so it gets a line.
+for w in "${weights[@]}"; do
+  if [ -f "$w" ]; then
+    mapfile -t -O "${#files[@]}" files < <(shards "$w")
+  else
+    echo "hatch-serving-guard: warning – weight file not found, not sized: $w" >&2
+  fi
+done
+if [ "${#files[@]}" -gt 0 ]; then
+  bytes=$(stat -c %s "${files[@]}" 2>/dev/null | awk '{s+=$1} END{print s+0}')
+  size_gib=$(( bytes / 1073741824 ))
+  sized_by="weights $size_gib"
+fi
+
+# --- 3. When it does not fit, unload what is idle, lowest value first ----------------------
+# HATCH_UNLOAD_ORDER (gpu-binaries.env) names the router entries that may go; each is idle
+# when no image is generating. Through llama-swap's own unload, which returns once the entry
+# is down; issuing it from inside another entry's start does not deadlock the router (checked
+# on v246 with a throwaway router and fake servers, 2026-09-28). Then MemAvailable has to
+# rise, which takes a few seconds after a 10 GiB server exits.
+unload_idle() {   # prints what it unloaded
+  local addr="${HATCH_SERVE_ADDR:-}" running mid
+  case "$addr" in ""|*'$'*) return 0 ;; esac
+  running=$(curl -s -m 10 "http://$addr/running" 2>/dev/null) || return 0
+  for mid in ${HATCH_UNLOAD_ORDER:-}; do
+    [ "$mid" = "${HATCH_SWAP_ID:-}" ] && continue
+    # Loaded AND ready: an entry still starting is serving a request that is waiting for it.
+    printf '%s' "$running" | python3 -c 'import json,sys
+sys.exit(0 if any(m.get("model") == sys.argv[1] and m.get("state") == "ready"
+                  for m in json.load(sys.stdin).get("running", [])) else 1)' "$mid" 2>/dev/null || continue
+    image_generating && continue
+    [ "$(curl -s -m 60 -o /dev/null -w '%{http_code}' -X POST "http://$addr/api/models/unload/$mid")" = 200 ] \
+      && printf ' %s' "$mid"
+  done
+}
+
+if [ -n "$size_gib" ]; then
+  need=$(( size_gib + GUARD_MARGIN_GIB ))
+  avail=$(awk '/^MemAvailable:/ {print int($2/1048576)}' /proc/meminfo)
+  if [ "$need" -gt "$avail" ]; then
+    freed="$removed$(unload_idle)"
+    if [ -n "$freed" ]; then
+      echo "hatch-serving-guard: need ~${need} GiB, ${avail} available; unloaded${freed} to make room." >&2
+      for _ in $(seq 1 "${GUARD_UNLOAD_WAIT_S:-30}"); do
+        avail=$(awk '/^MemAvailable:/ {print int($2/1048576)}' /proc/meminfo)
+        [ "$avail" -ge "$need" ] && break
+        sleep 1
+      done
+    fi
+  fi
+
+  if [ "$need" -gt "$avail" ]; then
+    echo "hatch-serving-guard: REFUSING – need ~${need} GiB ($sized_by + ${GUARD_MARGIN_GIB} margin), ${avail} GiB available." >&2
+    if [ -n "$resident_note" ]; then
+      echo "  $resident_note is holding memory – stop it with:" >&2
+      echo "    systemctl --user stop$resident_stop_units" >&2
+    elif [ -n "$own_note" ]; then
+      echo "  $own_note is holding memory; it unloads on its ttl, or POST /api/models/unload." >&2
+    else
+      echo "  nothing recognisable is holding memory; check 'systemctl --user list-units --state=active'." >&2
+    fi
+    lease_line
+    exit 98
+  fi
+  echo "hatch-serving-guard: ok – need ~${need} GiB, ${avail} GiB available${resident_note:+, alongside $resident_note}; starting." >&2
+fi
+
+exec "$@"

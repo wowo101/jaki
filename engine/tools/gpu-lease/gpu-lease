@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# gpu-lease — the verb. Everything it does lives in engine/apps/gpu-lease; this file
+# resolves its own path (hatch install deploys a symlink), exports it, and execs the
+# app with the same arguments. The exported path is what `launch` and `acquire` write
+# into their transient units' ExecStart and ExecStopPost, so a unit names the verb and
+# never the app.
+#
+# python3 directly, not `uv run --script`: the app has no dependencies, uv stays
+# resident as the unit's main process, and this call sits on the chat surface's
+# admission path.
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SELF="$(cd -P "$(dirname "$SOURCE")" && pwd)/$(basename "$SOURCE")"
+export HATCH_GPU_LEASE_VERB="$SELF"
+
+exec python3 "$(dirname "$SELF")/../../apps/gpu-lease/gpu_lease.py" "$@"

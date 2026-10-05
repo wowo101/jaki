@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""hatch – the machine provisioner.
+
+Brings a machine into the system: resolves what this host is, deploys the
+Layer-1 verbs / Layer-3 plugins its declared role calls for, and emits
+resolved config every artefact consumes. See specs/hatch-provisioner.md.
+
+Stdlib-only by design — no install step before this runs.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from engine.provisioner.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""hatch-pressure-watch – unload an idle model when the box runs short of memory.
+
+    hatch-pressure-watch [--once]
+
+Reads MemAvailable every second. Below FLOOR_GIB it unloads the first model in
+HATCH_UNLOAD_ORDER (engine/lib/gpu-binaries.env) that the router has loaded and that is idle –
+no image generating, for the image entry that is the order today – through llama-swap's
+`POST /api/models/unload/<id>`. It unloads one model per reading, does not unload the same model
+again for COOLDOWN_S, and logs every action with the reading that caused it; stdout reaches the
+journal through the unit. The resident is never in the order.
+
+Why: the box's peaks come after a load – an image's buffers, a long context – so the guard's
+load-time check does not see them. This covers idle models holding memory at such a peak.
+Everything busy at once is image admission's case, in hatch-image-front.
+
+`--once` takes one reading and acts on it, for a test.
+"""
+import json
+import os
+import pathlib
+import sys
+import time
+
+HERE = pathlib.Path(os.path.realpath(__file__)).parent
+sys.path.insert(0, str(HERE.parent.parent / "lib"))
+from serving_state import call, env_list, image_generating, mem_available_gib, router_addr  # noqa: E402
+
+FLOOR_GIB = float(os.environ.get("HATCH_PRESSURE_FLOOR_GIB", "8"))
+COOLDOWN_S = int(os.environ.get("HATCH_PRESSURE_COOLDOWN_S", "900"))
+INTERVAL_S = float(os.environ.get("HATCH_PRESSURE_INTERVAL_S", "1"))
+RETRY_S = 60
+last_unload: dict[str, float] = {}
+
+
+def log(msg: str) -> None:
+    print(f"hatch-pressure-watch: {msg}", flush=True)
+
+
+def loaded(addr: str) -> set[str] | None:
+    code, body = call("GET", f"http://{addr}/running", 5)
+    if code != 200:
+        return None
+    try:
+        return {m.get("model") for m in json.loads(body).get("running", [])
+                if m.get("state") == "ready"}
+    except (ValueError, AttributeError):
+        return None
+
+
+def step(addr: str) -> None:
+    avail = mem_available_gib()
+    if avail >= FLOOR_GIB:
+        return
+    up = loaded(addr)
+    if up is None:
+        log(f"MemAvailable {avail:.1f} GiB, below {FLOOR_GIB:g}; the router did not answer /running")
+        return
+    now = time.monotonic()
+    for mid in env_list("HATCH_UNLOAD_ORDER"):
+        if mid not in up or now - last_unload.get(mid, -COOLDOWN_S) < COOLDOWN_S:
+            continue
+        if image_generating():
+            continue
+        code, _ = call("POST", f"http://{addr}/api/models/unload/{mid}", 60)
+        # The cooldown follows a done unload; a refused one is retried a minute later.
+        last_unload[mid] = now if code == 200 else now - COOLDOWN_S + RETRY_S
+        log(f"MemAvailable {avail:.1f} GiB, below {FLOOR_GIB:g}: unloaded {mid}"
+            if code == 200 else f"MemAvailable {avail:.1f} GiB: the router refused to unload {mid}, HTTP {code}")
+        return
+
+
+def main() -> int:
+    addr = router_addr()
+    if not addr:
+        log("no router address (HATCH_SERVE_ADDR); nothing to watch")
+        return 78
+    if "--once" in sys.argv[1:]:
+        step(addr)
+        return 0
+    log(f"watching MemAvailable every {INTERVAL_S:g} s; below {FLOOR_GIB:g} GiB it unloads the first "
+        f"idle of: {' '.join(env_list('HATCH_UNLOAD_ORDER')) or 'nothing'}")
+    while True:
+        step(addr)
+        time.sleep(INTERVAL_S)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

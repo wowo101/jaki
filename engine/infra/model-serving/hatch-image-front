@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""hatch-image-front – pause the delegate for the length of each image generation.
+
+    hatch-image-front --port PORT -- SERVER-COMMAND...
+
+llama-swap's `zimage` entry runs this in place of sd-server. It starts SERVER-COMMAND (sd-server)
+on a free loopback port of its own, appending `--listen-port`, and proxies every request from
+PORT to it. A POST to a synchronous generation path (GENERATION_PATHS) is a generation; every
+other request is forwarded as it is. Before a generation is forwarded it:
+
+  1. writes the marker `$XDG_RUNTIME_DIR/hatch/image-generating` (its pid and the time), so
+     `hatch-serving-guard` holds any start of a paused model until the generation ends;
+  2. for each model in HATCH_IMAGE_PAUSES (engine/lib/gpu-binaries.env) that the router has
+     loaded, waits up to PAUSE_WAIT_S for its own server to report no slot processing, then
+     asks the router to unload it (`POST /api/models/unload/<id>`). A model still busy after
+     the wait is left loaded and the generation proceeds. llama-swap's unload does not wait for
+     a request in flight, so one that arrives between the idle reading and the unload – a
+     window of milliseconds – is cut with a 5xx. Every caller of the delegate retries that:
+     `engine/lib/tagging.py` (`keep`, the inbox importer), the transcriber's `LlamaServer`,
+     and Paperless-ngx's AI through llama-index's `OpenAILike` (three attempts on a 5xx);
+  3. admits it only if MemAvailable covers what an image adds plus a floor (NEED_*_GIB,
+     FLOOR_GIB), waiting up to ADMIT_WAIT_S; otherwise answers 503 with the reason;
+  4. forwards the request, one generation at a time.
+
+After the generation – answered, failed, or abandoned by a caller that hung up – it removes
+the marker and, in the background, asks the router to load each model it unloaded with a
+one-token request, which is how `gpu-lease` restores a resident. sd-server's async queue
+(`/sdcpp/v1`) returns before its image is made, so the pause cannot cover it.
+
+Why: an image's peak is the box's tightest moment – 110.1 GiB and 6.9 GiB available with every
+model busy (gufo maxload, 2026-09-27) – and the delegate holds ~5 GiB of that. Its callers are
+background jobs; a paused delegate costs them one image's length – ~30 s warm, 74 s with
+zimage's cold load (measured 2026-09-28) – plus ~10 s to reload; a kill costs the resident.
+"""
+
+import ctypes
+import http.client
+import http.server
+import json
+import os
+import pathlib
+import signal
+import socket
+import socketserver
+import subprocess
+import sys
+import threading
+import time
+
+HERE = pathlib.Path(os.path.realpath(__file__)).parent
+sys.path.insert(0, str(HERE.parent.parent / "lib"))
+from serving_state import MARKER, call, env_list, mem_available_gib, router_addr  # noqa: E402
+
+PAUSE_WAIT_S = int(os.environ.get("HATCH_IMAGE_PAUSE_WAIT_S", "60"))
+FORWARD_TIMEOUT_S = 900
+# The endpoints that answer only once the image exists; Open WebUI uses the first.
+GENERATION_PATHS = ("/v1/images/generations", "/v1/images/edits",
+                    "/sdapi/v1/txt2img", "/sdapi/v1/img2img")
+# Image admission. What one image adds to GPU memory, measured 2026-09-27 on the gufo resident:
+# 16.7 GiB when sd-server loads its weights for it (89.3 -> 106) and 11.4 once they are loaded
+# (98.7 -> 110.1), plus a floor the box keeps. An image that would take MemAvailable below the
+# floor waits up to ADMIT_WAIT_S for memory, then is answered 503 – a message the caller
+# receives, where a kill takes the resident.
+NEED_COLD_GIB = float(os.environ.get("HATCH_IMAGE_NEED_COLD_GIB", "17"))
+NEED_WARM_GIB = float(os.environ.get("HATCH_IMAGE_NEED_WARM_GIB", "11.5"))
+FLOOR_GIB = float(os.environ.get("HATCH_IMAGE_FLOOR_GIB", "4"))
+ADMIT_WAIT_S = int(os.environ.get("HATCH_IMAGE_ADMIT_WAIT_S", "60"))
+
+
+def log(msg: str) -> None:
+    print(f"hatch-image-front: {msg}", file=sys.stderr, flush=True)
+
+
+def paused_ids() -> list[str]:
+    """From the shared file only, as the guard reads it, so the two cannot disagree."""
+    return env_list("HATCH_IMAGE_PAUSES")
+
+
+def admit(warm: bool) -> str:
+    """"" when an image fits now or within ADMIT_WAIT_S; otherwise why it does not."""
+    need = (NEED_WARM_GIB if warm else NEED_COLD_GIB) + FLOOR_GIB
+    deadline = time.monotonic() + ADMIT_WAIT_S
+    while (avail := mem_available_gib()) < need:
+        if time.monotonic() >= deadline:
+            return (f"the box has {avail:.1f} GiB available and an image needs {need:.1f} "
+                    f"({'loaded' if warm else 'cold'} image server plus a {FLOOR_GIB:g} GiB floor); "
+                    "try again when the other work on the box has finished")
+        time.sleep(1)
+    return ""
+
+
+def busy(proxy: str) -> bool | None:
+    """True if any slot of the model's own llama-server is processing; None if it cannot say."""
+    code, body = call("GET", f"{proxy.rstrip('/')}/slots", 5)
+    if code != 200:
+        return None
+    try:
+        return any(s.get("is_processing") for s in json.loads(body))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def pause(addr: str) -> list[str]:
+    """Unload each idle paused model; return the ids actually unloaded."""
+    code, body = call("GET", f"http://{addr}/running", 10)
+    if code != 200:
+        log(f"router /running answered {code}; pausing nothing")
+        return []
+    running = {m.get("model"): m for m in json.loads(body).get("running", [])}
+    unloaded = []
+    for mid in paused_ids():
+        m = running.get(mid)
+        if not m or m.get("state") != "ready":
+            continue
+        deadline = time.monotonic() + PAUSE_WAIT_S
+        state = busy(m.get("proxy", ""))
+        while state and time.monotonic() < deadline:
+            time.sleep(1)
+            state = busy(m.get("proxy", ""))
+        if state is not False:
+            log(f"{mid} is {'still busy' if state else 'of unknown state'} after the wait; "
+                "left loaded for this generation")
+            continue
+        code, _ = call("POST", f"http://{addr}/api/models/unload/{mid}", 60)
+        if code == 200:
+            unloaded.append(mid)
+            log(f"paused {mid} for an image")
+        else:
+            log(f"router refused to unload {mid}: HTTP {code}")
+    return unloaded
+
+
+def resume(addr: str, ids: list[str]) -> None:
+    for mid in ids:
+        code, _ = call("POST", f"http://{addr}/v1/chat/completions", 300,
+                       {"model": mid, "max_tokens": 1,
+                        "messages": [{"role": "user", "content": "hi"}]})
+        log(f"resumed {mid}" if code == 200 else f"could not resume {mid}: HTTP {code}; "
+            "it loads on its next request")
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+class Front(http.server.BaseHTTPRequestHandler):
+    child_port = 0
+    gen_lock = threading.Lock()
+    warm = False                                      # sd-server has its weights loaded
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):                # the router logs requests already
+        pass
+
+    def _body(self) -> bytes | None:
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            parts = []
+            while True:
+                size = int(self.rfile.readline().split(b";")[0].strip() or b"0", 16)
+                if size == 0:
+                    while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                        pass                          # trailers
+                    return b"".join(parts)
+                parts.append(self.rfile.read(size))
+                self.rfile.readline()                 # the CRLF after each chunk
+        length = int(self.headers.get("Content-Length") or 0)
+        return self.rfile.read(length) if length else None
+
+    def _forward(self) -> None:
+        body = self._body()
+        headers = {k: v for k, v in self.headers.items()
+                   if k.lower() not in ("host", "connection", "content-length", "transfer-encoding")}
+        conn = http.client.HTTPConnection("127.0.0.1", self.child_port, timeout=FORWARD_TIMEOUT_S)
+        try:
+            conn.request(self.command, self.path, body=body, headers=headers)
+            r = conn.getresponse()
+            data = r.read()
+        except Exception as e:                        # noqa: BLE001 - reported to the caller
+            self.send_error(502, f"image server did not answer: {e}")
+            return
+        finally:
+            conn.close()
+        self.send_response(r.status)
+        for k, v in r.getheaders():
+            if k.lower() not in ("connection", "transfer-encoding", "content-length"):
+                self.send_header(k, v)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return 200 <= r.status < 300
+
+    do_GET = do_HEAD = do_PUT = do_DELETE = do_OPTIONS = do_PATCH = _forward
+
+    def do_POST(self):
+        if self.path.split("?", 1)[0] not in GENERATION_PATHS:
+            return self._forward()
+        unloaded, addr = [], ""
+        with self.gen_lock:
+            try:
+                addr = router_addr()
+                MARKER.parent.mkdir(parents=True, exist_ok=True)
+                MARKER.write_text(json.dumps({"pid": os.getpid(), "started": time.time()}))
+                unloaded = pause(addr) if addr else []
+                if not addr:
+                    log("no router address; generating without pausing anything")
+                refusal = admit(Front.warm)
+                if refusal:
+                    log(f"image refused: {refusal}")
+                    self._body()
+                    body = json.dumps({"error": {"message": refusal, "type": "server_busy"}}).encode()
+                    self.send_response(503)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                Front.warm = self._forward() or Front.warm
+            except OSError as e:                      # the caller hung up; the image is moot
+                log(f"generation abandoned by its caller: {e}")
+            finally:
+                MARKER.unlink(missing_ok=True)
+                if unloaded:
+                    threading.Thread(target=resume, args=(addr, unloaded), daemon=True).start()
+
+
+class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if len(argv) < 4 or argv[0] != "--port" or "--" not in argv:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    port = int(argv[1])
+    cmd = argv[argv.index("--") + 1:]
+    # Bind before the child exists: a failed bind must not leave a ~10 GiB image server behind.
+    server = Server(("127.0.0.1", port), Front)
+    Front.child_port = free_port()
+    # PR_SET_PDEATHSIG: the kernel sends the child SIGTERM if this process dies by any route,
+    # including one no handler here sees. llama-swap signals only the group leader on an
+    # unexpected exit.
+    libc = ctypes.CDLL(None, use_errno=True)
+    child = subprocess.Popen(cmd + ["--listen-port", str(Front.child_port)],
+                             preexec_fn=lambda: libc.prctl(1, signal.SIGTERM))
+    stopping = threading.Event()
+
+    def stop(signum, _frame):
+        stopping.set()
+        MARKER.unlink(missing_ok=True)
+        child.terminate()
+        try:
+            child.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            child.kill()
+        os._exit(0)
+
+    def watch_child():
+        child.wait()
+        if not stopping.is_set():
+            log(f"image server exited {child.returncode}")
+            MARKER.unlink(missing_ok=True)
+            os._exit(1)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    threading.Thread(target=watch_child, daemon=True).start()
+    log(f"front on 127.0.0.1:{port} → image server on :{Front.child_port}; "
+        f"pausing {' '.join(paused_ids()) or 'nothing'} during generations")
+    try:
+        server.serve_forever()
+    finally:
+        child.terminate()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

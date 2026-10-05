@@ -1,0 +1,23 @@
+# hatch: the pressure watcher – unloads an idle model when MemAvailable falls below 8 GiB.
+#
+# systemd *user* unit, deployed by `hatch install`. What it does and why: the header of
+# hatch-pressure-watch. Its log is the journal:
+#   journalctl --user -u hatch-pressure-watch
+# It acts only through llama-swap's unload API, so it needs the router's address, which comes
+# from the machine's own env file like the router's does.
+
+[Unit]
+Description=hatch: unload an idle model when the box runs short of memory
+After=llama-swap.service
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/hatch/env
+ExecStart=%h/.local/bin/hatch-pressure-watch
+Restart=on-failure
+RestartSec=30
+# 78 is "no router address": restarting cannot fix it, and at this pace the start limit never trips.
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=default.target

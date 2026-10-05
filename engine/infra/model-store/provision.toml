@@ -1,0 +1,14 @@
+kind = "app"
+# Keeps the box's GGUF store at its declared contents. The manifest is
+# `[[weights]]` in engine/models.toml; download-candidates.sh renders it and the
+# service applies it at every boot, resuming byte-exact over a slow link. Listed
+# as [artefacts].infra on the box, the only machine with the store.
+#
+# Provisioned because the deployed copy is the thing that goes wrong: the script
+# is a desired-state applier, and on 2026-08-06 the box re-pulled a pruned model
+# over the WAN because the row had been commented out in the repo and never
+# re-copied. A symlink makes the edit the deployment – and it is also what lets
+# the script resolve engine/lib/registry.sh and the registry beside itself.
+requires = ["curl", "python3"]
+bin      = ["download-candidates.sh"]
+units    = ["download-candidates.service"]

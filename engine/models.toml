@@ -1,0 +1,493 @@
+# The serving portfolio — canonical, with provenance.
+#
+# WHAT THIS IS. One place that says which local models hatch runs, in what role, with
+# which serving and sampling configuration, and **on what evidence**. It is the first
+# concrete artefact of the router described in `evaluations/agent/model-router-assessment.md`
+# ("build the static job→config table first"), and the pinned output of the `box-model-eval`
+# agent-axis evaluation.
+#
+# WHY IT EXISTS. The router assessment's finding is that "which model" is the small part and
+# the smeared, undocumented **config** is the real problem. That is not a forecast — on
+# 2026-07-27 a single session found four independent instances of it:
+#   · Laguna served with YaRN geometry built for a 1M window while never exceeding 65k —
+#     wrong for roughly a month, invisible because nothing declared what "right" was.
+#   · The 35B's Pi compaction threshold computing to exactly 0, so it compacted after every turn.
+#   · `--cache-reuse 256` copied into five serve lines and dead in all of them.
+#   · The 122B battery run at the model card's *precise-coding* temperature instead of its
+#     general-task one, which cost it three gold landmarks and nearly cost it the evaluation.
+# And the repo's own canonical serving artefact had diverged from the running unit in model,
+# geometry, binding and runtime. (What launches a model today is
+# `engine/infra/model-serving/llama-swap.yaml`, provisioned rather than hand-copied.)
+#
+# THE `evidence` FIELD IS LOAD-BEARING, not decoration. Every value here was expensive to
+# establish, and a registry that records only *what* rots exactly the way the service file did.
+# Recording *why* makes it auditable: a future reader can tell a hard-won setting from a
+# copied-in default, and can re-check the claim. Do not add a setting without one.
+#
+# THE `changes` FIELD ANSWERS A DIFFERENT QUESTION: what a human would NOTICE if this profile
+# were the one running. `evidence` justifies the setting to someone auditing it; `changes`
+# describes the profile to someone deciding whether they want it, in words that carry no flag
+# names. It exists because the agent surface is meant to be able to *propose* a profile change
+# and have a person accept or reject it, and a proposal is only
+# answerable if the offer says what changes rather than which knob moves. Write it in terms of
+# the answer he gets — speed, depth, whether it holds together, what it costs — and state the
+# failure mode, not only the benefit. Every profile gets one.
+#
+# `role` IS WHAT THE BOX SERVES TODAY, not what has been decided. `engine/models-check.py`
+# compares the router's loaded models against `models.qnext.serve` and `models.qwen4b.serve`
+# BY THOSE KEY NAMES, so a decided-but-undeployed portfolio change does NOT move keys here – it
+# goes in a `[pending.*]` block, and the keys move in the commit that deploys it. A `[pending.*]`
+# block present means some `role` value below is not the intended one; read it first.
+#
+# WHAT IS NOT HERE: models that served and were retired, candidates assessed and not adopted,
+# and the weight files the box keeps without fetching. They are in `engine/models.archive.toml`,
+# same shape, split out 2026-09-11 so this file holds only what a fresh machine needs.
+#
+# WHAT READS IT: `engine/models-check.py` verifies the box against it. The serving profiles are
+# COPIED into `engine/infra/model-serving/llama-swap.yaml`, which is what launches them; this file is
+# canonical and that one is the copy, so a change here is a change there.
+
+schema = 1
+host = "strix-halo"                        # the reference machine; every number here was measured on it
+store = "~/.local/share/models/gguf"
+ceiling_gib = 102                          # practical model+KV ceiling (124 GB GTT − overhead)
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# THE PORTFOLIO (roles decided 2026-07-27; last revised 2026-09-08, the sole-resident call)
+# Three roles, all three standing at once behind one address, `llama-swap` on :9090:
+#   resident  ← everything interactive: chat, recall, drafting, reading an image
+#   delegate  ← the mechanical work: tagging passes and transcript cleanup batches
+#   image     ← local image generation, co-resident with both
+#
+# `co-resident` and `escalate` ARE GONE, and their absence is a decision rather than an
+# oversight. qnext took the deep-drafting axis ds4's rung had been narrowed to, so a
+# human-gated move UP has nothing left to move up to.
+# `evaluations/agent/delegate-escalate-design.md` describes a two-direction router; only the
+# delegate direction survives.
+#
+# WHERE THE TIER IS DECLARED, and this file is not it: `engine/lib/gpu-binaries.env`, read by
+# `gpu-lease`, `hatch-serving-guard` and the taskboard, so a model added to the tier is known to
+# all three at once. Two keys, because a standing model can hold the GPU in either of two
+# shapes – HATCH_RESIDENTS (`unit:port:gguf:container`) for a systemd unit, and
+# HATCH_ROUTER_RESIDENTS (llama-swap model ids) for one the router holds. Every model below is
+# in the second shape today. A model with a role here and a name in neither key there makes
+# every `gpu-lease acquire` refuse and puts the model on the taskboard as an unleased GPU
+# holder. `test-gpu-lease.sh 23` asserts each consumer acts on that file.
+# ─────────────────────────────────────────────────────────────────────────────────────
+
+[models.qnext]
+role     = "resident"
+gguf     = "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"   # 4-shard split
+swap_id  = "qnext"                         # its llama-swap model id; how the tier names it
+size_gb  = 111.3
+params   = "125B total / 6B active MoE (10-of-512 routed, expert_ffn_len 640, 48 blocks: 36 Gated DeltaNet + 12 Qwen Sparse Attention) plus a 51B n-gram embedding table"
+purpose  = "Everything interactive: chat, recall, drafting, and reading images. The box's only large model, and the only one Open WebUI lists."
+adopted  = """SOLE RESIDENT at reasoning_effort low, SERVED ON GUFO SINCE 2026-09-28: unsloth/Qwen3.8-Flash-Next-GGUF UD-Q4_K_XL (4 shards) + Unsloth's shared MTP Q8_0 head + Unsloth mmproj BF16, in the gufo runtime image pinned in [[images]]. ADOPTED 2026-09-08 on two sealed blind reads and served on llama.cpp until the switch, decided 2026-09-27 on a two-session trial (evaluations/models/reports/gufo/README.md). The llama.cpp serve and its measurements: [retired.qnext_llamacpp] in engine/models.archive.toml."""
+evidence = """Two sealed blind reads, both opened 2026-09-08 after the verdicts were committed at a834385. DRAFTING: ranking P02 > P06 > P03 > P05 > P04 > P01 resolves to N D N N D D – qnext first, its worst passage above ds4's worst two, mean rank 2.67 vs 4.33. ds4 held the escalation rung on drafting alone (recall moved to the 27B on 2026-08-17), so losing it leaves that rung with nothing to escalate to. RUNG: four pairs indistinguishable on the read, so the marker count decides – low scores 16/18 against medium's 14/18 at 24% less wall. The n=1 ladder read preferring medium does not survive n=4. Reports: evaluations/models/reports/qnext-vs-ds4/prose/ and reports/qnext-rung/, each with VERDICT.md; assessment hub reports/qnext/README.md. SPEED on gufo 0.1.1, 2026-09-28, served with the MTP head, n=5 a cell: decode 35.3 tok/s at ~2k, 37.6 at ~13k, 37.4 at ~29k, 33.3 at ~59k, acceptance 0.58-0.67; prefill 1,100-1,220 tok/s at every depth. Against the llama.cpp pin on one evening (2026-09-27): prefill 2.0x, MTP decode +7% at ~2k and +24-38% from ~13k to ~59k, the six-query recall battery 19 min against 28. The llama.cpp speed history: [retired.qnext_llamacpp].speed."""
+regression_cleared = """The retired 27B tier existed largely because the 35B FAILS the Librela known-answer query (answers 2026-05-18 against gold 2026-07-11, reading top-BM25-relevance as most-recent). qnext concludes 2026-07-11 in 9 of 9 runs across qnext-low, qnext-battery and qnext-norare, separates ordering from administering a dose, and surfaces the still-unchecked 2026-08-26 order that no other arm mentions. VERIFIED BY READING THE ANSWERS: both dates appear in every arm's text, so a grep count for the gold date is not the test and would have passed the 35B too."""
+costs    = """THREE accepted. (1) Everyday decode is ~35 tok/s at chat depth against the 35B's 58, held to ~59k (33 there); prefill is ~1,200 tok/s at every depth. (2) THE GERMAN DEFECT below; on gufo at effort low one of five German answers carried a CJK word (2026-09-27). (3) HEADROOM: gufo's memory is fixed allocation – 84 GiB resident, no page cache to give way first – so with every model loaded and busy at once the box peaked at 110.1 GiB with 4.4 GiB available on 0.1.1, below 8 GiB for 8 s (maxload, 2026-09-28, the 4B left loaded through the image). The delegate's pause per image, image admission and the pressure watcher are the mitigation: engine/infra/model-serving/README.md, *The admission guard*."""
+german_defect = """qnext SUBSTITUTES A CHINESE TOKEN FOR A GERMAN CONTENT WORD in 8 of 15 German answers, leaving German morphology around it: `weder 连接et ist` for verbunden, `unserer 语言 greifen` for Sprache, plus 伦理, 命题, 同一 意图, 系统 而非 最近, 每个, 的标准 艺术. A blind read of the same query independently called the German wooden and grammatically wrong on both arms. SCOPE, counted across every answer in evaluations/agent/runs/: qnext German 8/15, qnext English 0/66, EVERY OTHER PORTFOLIO MODEL German 0/78 (35B 0/12, 27B 0/6, ds4 0/9, Laguna 0/14, 122B 0/6). Fires on the apepojken fork too, on a different engine, so it is the model and not the build. ACCEPTED 2026-09-08 as a cost of the pin. THE GOLD-SET SCORER CANNOT SEE IT – it counts marker recurrence, so an answer scores 3/3 while carrying Chinese tokens, which is how this survived an 18-run battery, a flag sweep and an effort ladder. evaluations/agent/README.md MANDATORY PRE-FLIGHT now instructs a scoring session to read one full German answer and count CJK codepoints per candidate; turning that into a scorer assertion is open and unowned."""
+structural = """CANNOT CO-RESIDE WITH ANOTHER LARGE MODEL, which is why the role is sole-resident-or-nothing: 84 GiB resident on gufo of a 124 GiB GTT. No rung changes that much – the engram table is IQ4_NL 26.82 GiB byte-identical in every rung, and gufo reads it from disk rather than holding it. THE BLIND DRAFTING READ SETTLED THE ROLE: qnext took ds4's own axis, which left the swap-in slot with nothing to swap in for. The 4B delegate is KEPT (2026-09-08) for mechanical work – qnext subsumes its vision job, not its throughput job. Small models fit beside it, measured on gufo 2026-09-27: the 4B at ~5 GiB, and zimage at ~11 GiB with a 17 GiB peak for a cold image."""
+changes  = "The one model the box has, and it answers everything: a quick question, a search over your notes, a piece of drafting, and it can look at an image without handing off. A chat answer arrives at roughly 35 tokens a second, against 58 for the model it replaced, and it keeps that pace as a conversation gets long. It reads a long prompt about twice as fast as it did before the 2026-09-28 engine switch, so a search over your notes finishes about a third sooner. It is the whole box, so no second large model runs beside it, and when the box is at its fullest an image request can be turned away with a message to try again. It writes bad German: expect wooden phrasing, grammatical errors, and now and then a Chinese word where a German one belongs."
+
+  [models.qnext.serve]
+  engine   = "gufo 0.7.0 (aedc129) – C++/HIP for gfx1151 on ROCm 7.2.3, run from the gufo-runtime podman image pinned by digest in [[images]]. SERVES SINCE 2026-10-04, on gufo since 2026-09-28. GATES ON THAT DIGEST, 2026-10-04, evaluations/models/gufo-trial.sh, outputs in ~/.local/share/box-model-eval/gufo-070-*/: the plain control 9/9; vision 6/6 gold labels; chat cache PASS replayed both with and without reasoning_content; the MTP ladder at 2 sessions and a 4 GiB RAM cache, n=5 a cell, prefill 1,089-1,221 tok/s and decode 33-40 tok/s to ~59k; maxload PASS at 2 sessions, peak 107.5 GiB, lowest MemAvailable 5.1, 3.0 GiB swap used. The 0.1.1 digest stays on the box as the rollback. WHY GUFO: prefill 2.0x the llama.cpp pin and MTP decode +7% to +38% by depth, same box and evening, and open source (MIT). UPSTREAM PACE: two maintainers, a release line since 0.1.0 on 2026-09-28 and an image rebuilt daily; move by digest and deliberately, and stack-watch reports each release. OPEN RISKS: #278 serves a lost GPU context as HTTP 200 with an empty body while /ready stays green, so a check asserts on content; #266 ends a tool call inside reasoning when max_tokens runs out."
+  flags    = ["--context 65536", "--sessions 2", "--cache-ram-bytes 4294967296", "--max-pending-per-client 16", "--cache-disk /cache", "--cache-disk-staging-bytes 8589934592"]
+  draft    = ["--speculative mtp", "--mtp-model mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"]
+  sampling = { temp = 1.0, top_p = 0.95, top_k = 20, min_p = 0.0, presence_penalty = 0.0, repeat_penalty = 1.0 }
+  # What hatch-serving-guard sizes a container entry by, in GiB: its weight paths are container
+  # paths, and gufo holds less than its files weigh. GTT in production shape (MTP head and
+  # projector loaded, 2 sessions) read 85.9 on gufo 0.7.0 on 2026-10-04; each session past the
+  # first adds ~1.85 GiB (89.6 at 4 sessions).
+  resident_gib = 86
+  # A KEY, not a sentence, because models-check.py reads it (off the running --reasoning-effort
+  # flag). Values: xhigh | medium | low.
+  reasoning_effort = "low"
+  effort   = "reasoning_effort = low, PINNED, and set SERVER-SIDE with gufo's --reasoning-effort. Adopted 2026-09-08 on the sealed rung packet: all four pairs read indistinguishable, so the marker count decided – 16/18 against medium's 14/18, at 24% less wall. The knob reads low, medium and xhigh, and a request may set it per call (2026-10-05, engine/infra/model-serving/client-contract-probe.py); minimal reads as low, high and max as xhigh, none as no effort sentence. Pi sends one whenever its model entry says reasoning: true – medium unless defaultThinkingLevel says otherwise. Thinking-off is a different switch. It is prompt injection in the chat template: low prepends a sentence, medium prepends nothing."
+  note     = "THE DRAFT HEAD IS UNSLOTH'S SHARED Q8_0, the one gufo's adaptive drafter is measured against; the archived mtp-Qwen-Qwen3.8-Flash-Next-Q8_0.gguf in the store is a different head. `--cache-disk-staging-bytes` 8 GiB because the default – the smallest of 1 GiB, RAM/8 and the disk budget – skips the 1.4-1.5 GB snapshots a 40-60k conversation produces (gufo #259, #279). gufo's /health is liveness only, so the router waits on /ready. Load: ready in 25-30 s when its weights are in page cache and 65-95 s otherwise (gufo 0.1.1, 2026-09-28; the router's 19:45 start logged 66 s, 45 s of it fingerprinting the weights)."
+  cache    = "A CHAT REUSES ITS WHOLE HISTORY FROM CACHE on 0.7.0, whether the client replays earlier answers with their reasoning_content (Pi) or without (a plain chat client): evaluations/models/chat-cache-probe.py, five turns on a ~4.9k-token first message, PASS both ways on 2026-10-04 (lowest reuse 4,917 of 4,922 tokens replayed without reasoning). 0.1.1 reused only the first message when reasoning was not replayed, which is why open-webui.service marks its connection as a llama.cpp provider; that setting stays and costs nothing. Sibling requests that share a prefix – sub-agents with one system prompt – read it from cache: the concurrency probe's later children read 2,048-3,358 tokens from cache."
+  sessions = """TWO SESSIONS, so two requests decode at once – parallel research sub-agents, or a chat beside an agent (WORK/research-agents.md). Measured 2026-10-04 on 0.7.0 with evaluations/models/gufo-concurrency-probe.py, four children sharing a ~3.3k-token system prompt, each with its own ~10k-token task: 78.5 s at 1 session, 68.7 s at 2 (-12%), 62.8 s at 4 (-20%). The gain is small because gufo prefills one request at a time and these children are mostly prefill; while two decode at once each runs at ~26 tok/s against ~38 alone. Siblings read the shared system prompt from cache. FOUR SESSIONS FAIL MAXLOAD: peak 114.7 GiB, 12.6 GiB swapped, the OOM killer took gufo. --cache-ram-bytes IS SET because the automatic budget is half of free RAM at start, up to 32 GiB, and it grew MemAvailable down from 34 to 18 GiB over one ladder (gufo #387). --max-pending-per-client 16 because every consumer on this box reaches gufo from loopback, which gufo counts as one client and refuses past 4 queued requests with HTTP 429. Changing --sessions invalidates the disk cache. A ladder at 1 session with an explicit 8 GiB cache, minutes after a cold boot, read single repeats as low as 550 tok/s prefill and 24 tok/s decode at ~2k, ~8k and ~29k; the 4 GiB and automatic runs that followed were steady, and the cause is not isolated."""
+  gate     = "Speculation is asserted per request on timings.draft_n (flashnext_depth_probe.py --require-draft); gufo logs `speculative=mtp draft_limit=7` on its load_completed line. Every trial request asserts on the answer's content, never on the status alone, because of #278."
+
+  [models.qnext.vision]
+  mmproj   = "Qwen3.8-Flash-Next-mmproj-BF16.gguf"   # 907,542,944 bytes, Unsloth
+  purpose  = "The resident reads images itself. This is what retired the vision delegate: the 4B's mmproj existed because ds4 had no eyes, and ds4 is gone."
+  evidence = "6/6 gold labels off the vision-delegate bench chart on gufo 0.1.1 (2026-09-28) and on b722a61 (2026-09-27), an image prompt of ~2,300 tokens in 7.8 s, against the Qwen3.5-4B delegate's 5/6. gufo's /props reports no modalities, so the gate runs with EXTERNAL=1. Bench and labels: evaluations/models/vision-delegate-bench.py at tag archive/vision-delegate, and WORK/vision-delegate.md."
+  note     = "Loaded on the resident's own serve line, so vision costs no second model and no second load. The vision-delegate seam is retired from the tree (2026-09-11): specs/vision-delegate.md describes it and tag archive/vision-delegate holds it, for a text-only resident that ever needs an image path."
+
+  [models.qnext.pi]
+  provider       = "local"
+  context_window = 65536
+  reasoning      = true      # Pi's per-model flag; `jaki client-config pi` copies it
+  compaction     = { reserve_tokens = 3072, keep_recent_tokens = 6000 }
+  evidence = "Both values carried over from the 35B unchanged: the serve is the same -c 65536 over a unified KV pool, so the window is honest, and the reserve is absolute – against 65536 the compaction threshold is ~62k, which makes compaction an emergency valve rather than a routine event. History worth keeping because it cost a month of silent damage: the default reserveTokens (16384) against contextWindow 16384 gave a threshold of exactly ZERO, so Pi compacted after every assistant turn. Fixed 2026-07-27."
+
+[models.qwen4b]
+role     = "delegate"
+gguf     = "Qwen3.5-4B-UD-Q4_K_XL.gguf"
+swap_id  = "qwen3.5-4b"                    # its llama-swap model id; how the tier names it
+size_gb  = 3.0
+purpose  = "The mechanical work, and since 2026-09-08 the model that actually does it: document tagging and transcript cleanup batches all resolve here."
+ruling   = "THE SLOT AND THE DELEGATION PATTERN BOTH STAY (decided 2026-09-11), and this model holds the slot until a successor appears. Raised because a faster engine would narrow the resident's gap to this model from 4.4x prefill and 1.9x decode to roughly 1.4x and 1.3x, which retires SPEED as the reason to keep a second model. Three reasons survive that and none is measured: CONCURRENCY - a single-model box serving a tagging batch beside a chat turn shares one KV pool, and on halogen's published table two streams halve per-stream decode and the drafter stops speculating unless a stream is alone; THINKING COST - this model runs thinking fully off, which is what stops it spending its budget on reasoning_content and returning empty tags at finish_reason=length, and a reasoning resident would need an equivalent floor over a 400-document batch; TAGGING QUALITY ON THE RESIDENT, never run on the strip-and-reconstruct harness, on a slot that has already rejected two faster challengers for losing year, author recall and tag recall. AVAILABILITY argues the same way: one model means a stall takes chat, recall, tagging and image reading down together. The cells that would settle it are in WORK/halogen-eval.md."
+consumers = """PROMOTED 2026-09-08 from a role this key described to one it holds. Until the sole-resident deployment those three consumers pointed at :8081 and therefore at the 35B, while this entry's `purpose` said tagging was the delegate's job and the strip-and-reconstruct harness scored the 4B – both true of different paths, and nothing said so. THE COST IS NAMED RATHER THAN DISCOVERED LATER: the 4B has never been scored against the 35B on tagging, only against Ling-3.0-tiny, so the change in tagging quality is real and unmeasured. Against Ling it holds 100% within the prompt's 2-5 tag limit (Ling 52%), in-pool 87% (78), year 86% (76), authors 0.92 (0.82)."""
+evidence = "Tagging bake-off on the X1 (~2x prefill throughput vs the larger candidates); wiring-validation baseline for the box. See MEMORY.md 2026-07-08. Re-measured on Nathan v0.7.4.1 2026-09-05 and within 2 points of July on everything except year (86 vs 79%), so the greedy-repeatability fix did not move the baseline: prefill 1,805 tok/s, decode 55, 13.7 docs/min. HELD AGAINST TWO CHALLENGERS for this slot: Ling-3.0-tiny 2026-09-05 and MiniCPM5-2B 2026-09-09 (see [assessed.ling3_tiny] and [assessed.minicpm5_2b] in engine/models.archive.toml). Both are faster and both lose the metadata columns a literature note depends on. Two weaknesses the challengers exposed and this model still has: it ignores the prompt's rule-1 type tag, returning one on 1 of 28 documents where MiniCPM returns one on 29 of 29, and it TRANSLATES GERMAN TITLES into English or French where both challengers keep them in German. It also fabricates authors - Botvinick for a Huettemann chapter - reproducibly on a fresh server, so that is the model and not a cache artefact. Its 2026-09-09 re-measurement is byte-identical to 2026-09-05 on all 30 rows; its speed moved 3-4% between the two, which is the floor on reading any speed number here. RE-PIN A/B 2026-09-11, Nathan v0.7.5 build 10677, both files served side by side by delegate-serve.sh under a keep lease, strip_reconstruct.py on the same 30-document slice and the German six, greedy: the previous artefact reproduces its 2026-09-09 rows 30/30 byte for byte on the new engine, so the two files sit on one scale. Upstream's file against it: 18 of 30 documents differ in at least one field, and the aggregates move by about one document either way – year 23/28 vs 24/28, author recall 0.94 vs 0.92, tag recall 0.36 vs 0.35 and precision 0.53 vs 0.51, in-pool 86% vs 87%, title counts identical (21 exact, 2 close, 3 partial, 2 wrong), tag count within 2-5 on 100% for both. German six identical on every column except tag precision, 0.53 vs 0.58, from two more predicted tags. Speed inside the floor: 13.88 vs 13.71 docs/min, prefill 1,846 vs 1,808 tok/s, decode 54.3 vs 54.9. VERDICT: equivalent at this harness's resolution; the re-pin costs nothing measurable and buys a file a fresh machine can fetch. The deployed llama-swap entry loaded the new file and answered a thinking-off probe the same night. Run outputs are gitignored since 2026-09-11; the rows are on the laptop at evaluations/tagging/reports/strip-reconstruct-results-qwen4b-repin*.json."
+
+  # ⚠ HONEST GAP: this model has NEVER been through the agent recall battery — it was the
+  # setup-validation baseline, not a scored candidate. Its delegate role rests on throughput
+  # evidence, not quality evidence. That is defensible for bulk prefill work and would NOT be
+  # defensible if it were ever given agent/tool-calling work.
+  # ⚠ Also note the portfolio was named as "Qwen3.6 4B"; what is on the box is Qwen3.5-4B.
+  # A 3.6-generation 4B would be a fresh download and is untested.
+  [models.qwen4b.serve]
+  flags = ["-ngl 999", "-fa on", "--no-mmap", "--jinja", "-np 1", "-c 16384", "-ub 512", "--fit off", "--chat-template-kwargs {\"enable_thinking\":false}"]
+  engine = "The pinned host binary, [[binaries]] llama-server, through the ${fork} macro and hatch-serving-guard – SINCE 2026-09-11. Until then production served this model from the kyuz0 vulkan-radv toolbox while every tagging measurement (2026-09-05, 09-09, 09-11) ran on the host binary through delegate-serve.sh, so the move aligns the serve with what was measured and removes `toolbox create` from the install. The flags are delegate-serve.sh's geometry; the router-served entry answered a thinking-off probe on the night of the move."
+  note  = "Flags are what the box serves, verified against the running process. thinking OFF is load-bearing for tagging: Qwen defaults to thinking and burns the whole token budget on reasoning_content, returning empty tags (verified 2026-07-05). `--no-mmap` is the anonymous-vs-page-cache choice [models.qnext.serve].note spends a paragraph on, and is right here because 3 GiB is small enough that there is nothing worth reclaiming. ⚠ models-check.py compares DECLARED-INTO-RUNNING and cannot see an EXTRA flag on the serve; the [rejected] scan is what catches an extra flag that matters. That blind spot is how this key sat at the X1-era `-ngl 99 -fa on` with no `--no-mmap` for months while the llama-swap entry served otherwise (corrected 2026-09-09)."
+  changes = "Fast and shallow, and it does not think – it answers straight out. That is what makes it right for chewing through a document backlog roughly twice as fast as the model it took the job from, and wrong for anything you would want reasoned about: asked to work a problem through, it does not produce a worse answer, it produces an empty one. It has never been measured on recall or tool-use at all, so treat any agent work on it as unknown rather than adequate."
+
+  [models.qwen4b.pi]
+  provider       = "local"
+  context_window = 16384      # honest: the served -c, not the resident's window
+  evidence = "Registered beside the resident on the same provider so the delegate direction of evaluations/agent/delegate-escalate-design.md has something to route to – it is the only direction left since ds4's escalation rung retired. Reached by its llama-swap id, not by a gguf filename: the router routes on what the request names."
+
+  # THE VISION SUB-PROFILE IS RETIRED (2026-09-08). It existed because ds4 had no eyes; ds4 is
+  # gone and the resident reads images on its own serve line – see [models.qnext.vision]. The
+  # mmproj file (mmproj-Qwen3.5-4B-F16.gguf, 672,423,616 bytes) stays in the store and in the
+  # model-store manifest; nothing loads it. The candidate bench that chose it, and the 4.47 GiB
+  # co-residency measurement, are in WORK/vision-delegate.md, closed the same day.
+
+[models.zimage]
+role     = "image"
+gguf     = "z_image_turbo-Q8_0.gguf"
+swap_id  = "zimage"                        # its llama-swap model id
+size_gb  = 11.2
+purpose  = "Local image generation: illustration, concept imagery, essay material. NOT diagrams or infographics – those are code-rendered (Mermaid or hand-authored SVG). Rides llama-swap as a guarded ttl'd entry for the single gesture; a batch takes the gpu-lease and stands its own sd-server, like any eval. THIS MODEL HOLDS THE SLOT AND IS PREFERRED FOR REALISTIC IMAGES (decided 2026-09-23). Qwen-Image-2.1 was measured against it and kept for two narrow jobs only – artistic photographs, and text in an image – at about 13x the wall time, non-commercially licensed, and capped at 768x1024 on this box. It has no router entry and is run under a lease: [assessed.qwenimage21] in engine/models.archive.toml."
+weights  = "Three files, summed by the guard: the Q8_0 diffusion model (6,577,440,704 B, leejet/Z-Image-Turbo-GGUF – the sd.cpp author's own conversion) + the Qwen3-4B-Instruct-2507 Q8_0 text encoder (4,280,405,600 B – the EXACT model Z-Image conditions on; the store's Qwen3.5-4B cannot substitute) + FLUX's VAE as flux-ae.safetensors (335,304,388 B, sha256 afc8e282… – pulled from an ungated mirror, black-forest-labs is gated and 401s)."
+evidence = "Backend A/B on the box 2026-08-22 (evaluations/models/zimage-backend-ab.sh, ab-20260822-100014): same prompt, seed 42, 768x1024, 8 steps, three runs per backend, every PNG pixel-asserted (stddev ~47, ~90k distinct colours – the grey-PNG VAE-OOM failure of sd.cpp #1220 never appeared). ROCm (7.14 toolbox) 29.3 s/image, Vulkan (host binary) 30.9 s – both stable, outputs byte-identical across runs within a backend at fixed seed, NOT across backends. VULKAN PINNED on operational shape, not speed: a host binary with bundled libs under the guard (no container, no cmdStop, no tenancy in the ds4 toolbox; since 2026-09-28 behind hatch-image-front, which signals it on stop), and 1.6 s/image does not buy that complexity back. Served round trip verified through llama-swap: 45.3 s cold including load, image pixel-asserted."
+measured = { gen_s_768x1024 = 30.9, sampling_s_8_steps = 27.8, vae_decode_s = 2.1, served_cold_s = 45.3, gtt_gib_loaded = 10.2 }
+
+note     = """THE SANCTIONED MEMORY CONFIGURATIONS LIVE HERE, canonically (every other file points at this key). THERE IS ONE, and everything the box serves is in it: qnext on gufo + the 4B delegate + this, all three standing behind llama-swap with no swap between them.
+
+A NUMBER IS MEANINGLESS WITHOUT ITS STATE. Against a 124 GiB GTT, qnext on gufo in production shape:
+
+  state                                        GTT     MemAvailable   when
+  qnext alone, 2 sessions                      85.9    35.2           2026-10-04, gufo 0.7.0
+  qnext + the 4B delegate                      89.3    -              the standing pair, before any image (2026-09-27)
+  + zimage, loaded and idle                    98.7    16.7           after one image, during a busy maxload round (2026-09-28)
+  PEAK, one 1024x1024 image, 4B loaded         106     18.5           2026-09-27, gufo b722a61
+  PEAK, every model busy at once               107.5   5.1 (lowest)   maxload 2026-10-04, 0.7.0, 2 sessions, 4 GiB RAM cache
+
+sd-server loads its weights on the FIRST REQUEST and not at start, so zimage adds ~10 GiB only once an image has been asked for, and ~17 GiB at the peak of a cold image. Under gufo every byte is a fixed allocation: the n-gram table is read from disk and holds no page cache, so nothing gives way before the kernel's OOM choice. The production image path pauses the 4B for each image (~5 GiB), the front refuses an image whose need MemAvailable cannot cover, and the pressure watcher unloads an idle zimage below 8 GiB – engine/infra/model-serving/README.md, *The admission guard*. The llama.cpp serve's table, where -lm mmap made the table reclaimable page cache: [retired.qnext_llamacpp] in engine/models.archive.toml.
+
+CAVEATS THAT STILL BOUND IT: maxload ran with the speech container and GPU diarisation idle, and with the 4B left loaded through the image, which production pauses; a run with diarisation active would size the margins.
+
+Serving quirks are comments on the llama-swap entry, where an operator editing it is actually looking; Turbo wants cfg-scale 1.0 and no negative prompt."""
+changes  = "Ask for a picture and one arrives in about half a minute, or 45 seconds if the model has to load first. It costs about ten gigabytes while loaded, sits alongside the resident and the delegate rather than displacing either, and unloads itself after 15 minutes idle. Asking for an image no longer costs you the chat model – that was the arrangement under the old escalation model, and it is gone."
+
+  [models.zimage.serve]
+  binary   = "~/.local/share/image-gen/sd-cpp/97d2990/vulkan/sd-server (host binary, all libs bundled)"
+  flags    = ["--diffusion-fa", "--cfg-scale 1.0", "--steps 8"]
+  weights  = ["--diffusion-model z_image_turbo-Q8_0.gguf", "--llm Qwen3-4B-Instruct-2507-Q8_0.gguf", "--vae flux-ae.safetensors"]
+  note     = "ADDED 2026-09-09 because its absence was silence, not coverage: models-check.py compares each standing model's running flags against `serve` BY THAT KEY, so an entry without one produced no line and no finding while reading as a clean run. Turbo wants cfg-scale 1.0 and no negative prompt. sd-server spells the bind `--listen-port`, not `--port`, and serves no /health (404, verified 2026-08-22) – hence `checkEndpoint: /` on the llama-swap entry, without which the readiness probe never turns green and every request queues into healthCheckTimeout."
+
+[models.speech]
+role     = "speech"
+swap_id  = "speech"                        # its llama-swap entry; callers name a model id below
+size_gb  = 2.0                             # weights, measured on HF 2026-09-10: whisper turbo 1.62 + Kokoro 0.35 + Piper 0.06. RESIDENT COST IS NOT THAT: the container idles at ~60 MB RSS and reaches ~2.5 GiB while whisper is loaded, releasing it 300 s after the last transcription.
+purpose  = "Speech in and speech out for the whole tailnet: Open WebUI's microphone and read-aloud, and any client that posts to /v1/audio/transcriptions or /v1/audio/speech. CPU only – it holds no GPU and takes no lease."
+server   = "speaches 0.8.3 (MIT), ghcr.io/speaches-ai/speaches:0.8.3-cpu, image digest sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8. Three executors behind the OpenAI audio endpoints: faster-whisper in, Kokoro and Piper out. PINNED TO THE RELEASE, NOT latest-cpu: 0.9.0 is in release-candidate upstream and renames the configuration this entry sets – stt_model_ttl and tts_model_ttl replace WHISPER__TTL, and preload_models arrives. Bump deliberately and re-read the WHISPER__* names against the new config.py when you do."
+
+# THE ROUTABLE IDS, as a list because models-check.py reads it: it asks the running server
+# which models it holds and compares against exactly these. Prose alone would not be checked.
+# They are the UPSTREAM's own names, not short ids of ours. llama-swap starts one process per
+# model id, so three short ids would mean three containers; aliasing one entry with the names
+# speaches itself uses keeps it to one container and forwards the request body unrewritten,
+# which means a caller names the model it actually gets.
+model_ids = [
+  "deepdml/faster-whisper-large-v3-turbo-ct2",
+  "speaches-ai/Kokoro-82M-v1.0-ONNX",
+  "speaches-ai/piper-de_DE-thorsten-medium",
+]
+models   = """WHAT EACH ONE IS.
+  · deepdml/faster-whisper-large-v3-turbo-ct2 – speech in. Multilingual (de and en among the nine languages its card tags), CTranslate2, served int8 on CPU. THE SAME MODEL A LOCAL TRANSCRIPTION TOOL RUNS (`large-v3-turbo`), so the box holds one ASR weight set and one behaviour to know.
+  · speaches-ai/Kokoro-82M-v1.0-ONNX – speech out, English. Open WebUI's TTS points here (2026-09-10), voice af_heart.
+  · speaches-ai/piper-de_DE-thorsten-medium – speech out, German. Kokoro's languages are en/es/fr/hi/it/ja/pt/zh and German is not among them; Piper ships one repo per voice, so a second German voice would be a second id.
+`whisper-1` IS NOT ROUTED. It is speaches' own alias for Systran/faster-whisper-large-v3, a second ASR weight set this box does not hold, and a 404 from the router beats fetching 1.5 GB nobody asked for. Its TTS twins `tts-1` and `tts-1-hd` ARE routed as aliases on the llama-swap entry, because speaches maps them to the Kokoro model already served and Open WebUI's AUDIO_TTS_MODEL defaults to `tts-1` – a default already written into its database, so read-aloud posts it until someone opens Admin Settings → Audio."""
+evidence = "DEPLOYED AND VERIFIED 2026-09-10: round trip through the router in both languages – Kokoro speaks \"The tide turns at four.\" and whisper returns it verbatim; Piper speaks \"Die Tide kentert um vier Uhr.\" and whisper returns \"Die Tide kentert um 4 Uhr.\" (its own numeral normalisation). 3.7 s cold on a 1.3 s utterance, 2.7 s warm. GTT 0.5 GiB with speech up and no model server running, so the CPU-only claim is measured and not asserted; the resident loaded beside it in 24.6 s to 70.2 GiB. `tts-1` routes, which is what Open WebUI posts by default. Chosen over Open WebUI's bundled faster-whisper because that one serves the browser alone: an agent harness, a transcription tool and any other tailnet client would have no speech address. llama-swap v246 – the build already on the box – routes /v1/audio/speech, /v1/audio/voices and the multipart /v1/audio/transcriptions, and applies its alias resolution to the form field as well as to a JSON body, so the audio tier needed no router upgrade. Read off v246's own internal/server/server.go and internal/server/filters.go."
+note     = """NO GUARD, ON PURPOSE. hatch-serving-guard refuses a load whenever an eval or a `--resident stop` lease owns the GPU. This server never competes for the GPU, so wrapping it would close speech for the length of every battery in exchange for nothing. WHISPER__INFERENCE_DEVICE=cpu makes CPU-only structural rather than a claim – `auto` is upstream's default and would look for an accelerator.
+IT IS A MEMBER OF THE `box` GROUP AND THAT IS NOT A MEMORY CLAIM. A llama-swap entry named in no group lands in `(default)`, which is created with `exclusive: true`, so loading it would unload the resident. Membership is what stops a dictation evicting 87 GiB.
+NOT IN engine/lib/gpu-binaries.env, for the same reason zimage is not: that file answers who is holding the GPU, and this holds none. A `--resident stop` lease stops the container along with the router's models; it returns on the next speech request.
+HF_HUB_OFFLINE=1 ON THE SERVING CONTAINER. Weights arrive only through engine/infra/model-serving/speaches-models.sh, so a chat message can never start a multi-GB pull over a slow uplink; a missing model fails the request instead. That script asks speaches to download (POST /v1/models/<id>) rather than fetching files itself, because which files a model needs is the executor's knowledge and a copy of it here would go stale.
+WHISPER__CPU_THREADS=8 of 32. Upstream's default is 0, meaning all of them, which puts a transcription in the middle of whatever the resident is decoding."""
+changes  = "You can talk to the box and it can talk back. The microphone button in the browser transcribes what you said, in German or English, and the read-aloud button speaks the answer in an English voice. Both run on the processor, so neither takes anything away from the model that is answering you, and neither waits when an evaluation has the GPU."
+
+  [models.speech.serve]
+  binary   = "podman run ghcr.io/speaches-ai/speaches:0.8.3-cpu – the CPU image, no toolbox and no host binary"
+  # env, not flags: the podman command line is how these are set, but the container's own
+  # environment is what decides behaviour, and it is what models-check.py reads back from
+  # `podman inspect`. A flag list would be checked against the argv that produced it, which
+  # is one step short of the artefact.
+  env      = [
+    "ENABLE_UI=false",
+    "WHISPER__INFERENCE_DEVICE=cpu",
+    "WHISPER__COMPUTE_TYPE=int8",
+    "WHISPER__CPU_THREADS=8",
+    "HF_HUB_OFFLINE=1",
+  ]
+  container = "speaches"
+  note     = "WHISPER__TTL is speaches' own idle unload and is left at its 300 s default: the container stands (llama-swap `ttl: 0`) so the address always answers, while the ~1.6 GiB whisper model comes and goes underneath it. Health is `/health`, which llama-swap's default checkEndpoint already uses – unlike sd-server, this one serves it. `/v1/audio/voices` exists on both sides – llama-swap dispatches it as a GET with the model in the query string, and speaches answers it – but Open WebUI calls it with NO model parameter, so that call fails through the router and its voice dropdown falls back to OpenAI's own names, which speaches rejects. Type the voice rather than picking it."
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# THE BINARIES. The three upstream releases this repo does not carry and cannot build: the
+# serving engine, the router in front of it, and the image server. `serving-binaries.sh`
+# fetches them, checks the digest and unpacks them where `llama-swap.yaml` and
+# `llama-swap.service` expect to find them.
+#
+# THE VERSION LIVES HERE AND NOWHERE ELSE. `hatch install` emits `HATCH_BIN_<NAME>` from each
+# row's `dest` + `verify`, and `llama-swap.yaml` names that variable, so a bump is one edit and
+# a re-run of the fetcher. `verify` is what makes a bump complete rather than started, because
+# an archive that unpacked to the wrong shape leaves the old binary in place and the router
+# keeps working until the next restart; the pin is stamped beside the binary and compared.
+#
+# `sha256` IS CHECKED ON EVERY FETCH, unlike the weights, where re-reading 100 GiB at each
+# boot would cost minutes for files nothing can have changed. These are tens of megabytes and
+# they are executables.
+# ─────────────────────────────────────────────────────────────────────────────────────
+
+[[binaries]]
+name    = "llama-server"
+what    = "the serving engine: llama.cpp on the Nathan lineage, with its own bundled RADV"
+url     = "https://github.com/Nathanw1014/strix-halo-llamacpp/releases/download/v0.7.6.1/strix-halo-llamacpp-vulkan-portable.tar.gz"
+sha256  = "b75fc46bb30c52f6b2e905c9f959cba3aa2c253fa148e667f243ef4744bb8658"
+bytes   = 34938792
+unpack  = "tar"
+dest    = "~/.local/share/box-model-eval/nathan-fork/v0.7.6.1"
+verify  = "vulkan/llama-server"
+note    = "THE `vulkan/` IS PART OF THE PATH. v0.6.1 unpacked that directory's contents at the top level and every release since keeps the directory, so a path copied from that era resolves to nothing – and llama-swap reports any early exit as `upstream command exited prematurely`, which reads like a bad flag. The pin and the evidence behind it are [models.qnext.serve].engine; any bump is gated on evaluations/models/apepojken-plain-control.sh reading 9/9 on the new binary."
+
+[[binaries]]
+name    = "llama-swap"
+what    = "the router: one OpenAI-compatible address in front of every entry"
+url     = "https://github.com/mostlygeek/llama-swap/releases/download/v246/llama-swap_246_linux_amd64.tar.gz"
+sha256  = "92ea5c37f66a7ed31bd83ffb1b1b46b7f033881f742fead6c6e64a6601013352"
+bytes   = 12878901
+unpack  = "tar"
+only    = "llama-swap"
+dest    = "~/.local/bin"
+verify  = "llama-swap"
+note    = "v246 already routes /v1/audio/speech, /v1/audio/voices and the multipart /v1/audio/transcriptions, and resolves `${env.…}` macros in its config, which is what lets llama-swap.yaml carry no machine's paths. `only` because this archive also holds a README and a licence, and ~/.local/bin is a PATH directory. The digest matches the release's own llama-swap_246_checksums.txt, read separately."
+
+[[binaries]]
+name    = "sd-server"
+what    = "the image server: stable-diffusion.cpp, Vulkan build, all libraries bundled"
+url     = "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-827-97d2990/sd-master-97d2990-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip"
+sha256  = "448c2b00882dffe14cc976223c9057ff16ebe5dd0d47f862ea574c3feff37d72"
+bytes   = 46006487
+unpack  = "zip"
+dest    = "~/.local/share/image-gen/sd-cpp/97d2990/vulkan"
+verify  = "sd-server"
+note    = "Vulkan rather than the ROCm build, on operational shape and not on speed: a host binary with bundled libraries runs under the guard with no container and no cmdStop (since 2026-09-28 behind hatch-image-front, which signals it on stop), and 1.6 s/image does not buy that complexity back. The A/B is [models.zimage].evidence. leejet publishes one release per master build, so the tag carries the commit and the pin is exact."
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# THE CONTAINER IMAGES a GPU entry runs from, pinned by digest. `serving-binaries` pulls each
+# one by `ref@digest` and checks the digest podman reports; `hatch install` emits
+# `HATCH_IMG_<NAME>` as `ref@digest`, which is what llama-swap.yaml names – never a tag, since
+# the upstream rebuilds its tags. A bump changes `digest` and `version` here, then
+# `serving-binaries`, `hatch install` and a router restart. `version` is what
+# `gufo --version` prints from the pulled image, and is checked.
+# ─────────────────────────────────────────────────────────────────────────────────────
+
+[[images]]
+name    = "gufo-runtime"
+what    = "the resident's engine: gufo, C++/HIP for gfx1151, on ROCm 7.2.3"
+ref     = "ghcr.io/gufo-org/toolboxes/gufo-runtime"
+digest  = "sha256:b280a3781e0588154149f76b6d3fb6f0bc5f56da0f5352887af521f0a62dcf70"
+version = "gufo version 0.7.0 (aedc129)"
+version_cmd = "gufo --version"
+note    = "Tag 0.7.0 carried this digest on 2026-10-04; it adds 16 MiB to the 0.1.1 image. Gates on this digest, 2026-10-04: evaluations/models/gufo-trial.sh stages control, mtp, vision, chatcache, concurrency and maxload, results in [models.qnext.serve].engine and .sessions. Since 0.1.1 the releases fixed sibling requests each prefilling a shared prefix (#340, 0.6.0), the RAM cache holding only 2 x sessions conversations (#341, 0.5.0), and the residual where a chat replayed without reasoning reused only its first message (0.1.1's `cache` entry); 0.6.0 and 0.7.0 also claim fixes for a lost GPU context answering HTTP 200 (#390, #406), not verified here. ROLLBACK: the 0.1.1 digest sha256:2e7ffbd417307171d83bbe2d89770bd3bee5970b72c90213c264da0ad4dd912f is still on the box; set it here, drop --sessions to 1 and the two new flags in the router entry, and run hatch install."
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# THE WEIGHTS. One row per file in the box's GGUF store, and the only home for a byte size
+# or a digest. `engine/infra/model-store/download-candidates.sh` renders its manifest from
+# these rows at every boot and holds nothing of its own; until 2026-09-10 it carried its own
+# copy of every size, which is the duplication this table ends.
+#
+# TWO STATES, and the difference is what a cold rebuild pulls over the WAN:
+#
+#   serving   the deployed configuration loads it. This set IS the omni-modal package's
+#             weights – a machine that has these ten files and the configuration in this
+#             repo serves text, the delegate, images and vision. Fetched if missing.
+#   archived  on the box and nothing loads it. NEVER fetched. Retired models keep their
+#             weights (2026-09-08) so a re-test costs no download, but a fresh box
+#             must not spend 400 GB of metered uplink acquiring them, and deleting one here
+#             must stay deleted – the 2026-08-06 re-pull was an active row for a model that
+#             had been pruned two days earlier.
+#
+# A ROW IS THE STORE'S DESIRED STATE, so removing a file means changing its state here, not
+# just deleting it. A file in the store with no row is undeclared and nothing checks it.
+#
+# `for` names the registry key the file belongs to – `[models.<key>]` here, or `[retired.<key>]` /
+# `[assessed.<key>]` in engine/models.archive.toml – which is where the verdict and the
+# measurements live. Only `serving` rows are here; the archived rows are in that file, and
+# `registry-query.py` appends them when it sits beside this one. The rows carry
+# only what the fetcher needs plus the choices a reader would otherwise re-litigate.
+#
+# `sha256` is the file's LFS oid on Hugging Face, recorded where it is known. Only
+# flux-ae.safetensors is CHECKED after a pull, and its row says why.
+# ─────────────────────────────────────────────────────────────────────────────────────
+
+[[weights]]
+file   = "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
+repo   = "unsloth/Qwen3.8-Flash-Next-GGUF"
+path   = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
+bytes  = 10946624
+sha256 = "4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082"
+state  = "serving"
+for    = "qnext"
+
+[[weights]]
+file   = "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf"
+repo   = "unsloth/Qwen3.8-Flash-Next-GGUF"
+path   = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf"
+bytes  = 49859583136
+sha256 = "3f342f1c1580473f1ee94ddd5b28206e8c07a70fa1a366f59d1d6c922919a6c9"
+state  = "serving"
+for    = "qnext"
+
+[[weights]]
+file   = "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf"
+repo   = "unsloth/Qwen3.8-Flash-Next-GGUF"
+path   = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf"
+bytes  = 49376141504
+sha256 = "56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3"
+state  = "serving"
+for    = "qnext"
+
+[[weights]]
+file   = "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf"
+repo   = "unsloth/Qwen3.8-Flash-Next-GGUF"
+path   = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf"
+bytes  = 12087983520
+sha256 = "753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a"
+state  = "serving"
+for    = "qnext"
+note   = "103.7 GiB on disk and 84 GiB resident under gufo, which reads the 26.8 GiB n-gram table from disk and holds no page cache for it. Under llama.cpp the same rung does not fit the 102 GiB ceiling without routing that table out with -ot, which is why the rows in engine/models.archive.toml carried UD-IQ4_XS until the gufo switch. gufo finds the other three shards beside the first. Pulled at repo revision 38bb39e, sha256 checked against the LFS oids 2026-09-27."
+
+[[weights]]
+file   = "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+repo   = "unsloth/Qwen3.8-Flash-Next-GGUF"
+path   = "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+bytes  = 2786568256
+sha256 = "5ff54097406a905cf3a724c709124ceb0e3e10235ee862298969e91c96fa96e6"
+state  = "serving"
+for    = "qnext"
+note   = "Unsloth's shared MTP head, the one gufo's adaptive drafter is built and measured against. A different file from the archived mtp-Qwen-Qwen3.8-Flash-Next-Q8_0.gguf beside it, which is the head llama.cpp measured slower than no draft; the store is flat, so the names are all that tell them apart."
+
+[[weights]]
+file   = "Qwen3.8-Flash-Next-mmproj-BF16.gguf"
+repo   = "unsloth/Qwen3.8-Flash-Next-GGUF"
+path   = "mmproj-BF16.gguf"
+bytes  = 907542944
+sha256 = "2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355"
+state  = "serving"
+for    = "qnext"
+note   = "Renamed on the box from the repo's bare mmproj-BF16.gguf, which names no model in a flat store. BF16 because gufo loads it natively; the F16 AtomicChat file llama.cpp used is archived."
+
+[[weights]]
+file   = "Qwen3.5-4B-UD-Q4_K_XL.gguf"
+repo   = "unsloth/Qwen3.5-4B-GGUF"
+path   = "Qwen3.5-4B-UD-Q4_K_XL.gguf"
+bytes  = 2912109728
+sha256 = "b252c5610a42ca82d20fe2a12813e9d069eed89292907e26c783eeb0bc961bc7"
+state  = "serving"
+for    = "qwen4b"
+note   = "RE-PINNED TO UPSTREAM 2026-09-11: the file resolve/main serves, size and LFS oid above, so a fresh machine fetches what the box runs. Until then the row pinned the box's own artefact (2,990,664,000 bytes, sha256 d2bfbee4…), scp'd from the X1 on 2026-07-12, which upstream no longer serves under this name; it is kept as the `archived` row below for a same-box A/B. WHAT DIFFERS, from the two headers (2026-09-11): both Unsloth UD-Q4_K_XL from an imatrix on the same calibration file, different conversions. The old file has 33 blocks and 441 tensors and carries qwen35.nextn_predict_layers, the multi-token-prediction layer; this one has 32 blocks and 426 tensors with that layer removed (Unsloth ships it as Qwen3.5-4B-MTP-GGUF). imatrix 77 chunks old, 80 new; attn_qkv Q6_K -> Q5_K, ssm_alpha/ssm_beta F32 -> F16, ten IQ4_XS tensors new. The chat templates differ: the old ends in an Unsloth comment naming developer-role and tool-calling fixes and merges two leading system messages; this one raises on a system message that is not first and defaults to thinking OFF unless enable_thinking is true. The serve line passes enable_thinking:false, the no-think branch of both. WHEN AND WHY IS NOT IN UPSTREAM'S RECORD: all 37 commits on the repo are dated 2026-03-02, and the Dynamic 3.0 requant of 2026-08-19 is documented for Qwen3.8-27B only; the 2026-08-19 date an earlier note gave was an inference and is withdrawn. RE-MEASURE: see [models.qwen4b].evidence for the 2026-09-11 A/B on the 30-document slice."
+
+[[weights]]
+file   = "z_image_turbo-Q8_0.gguf"
+repo   = "leejet/Z-Image-Turbo-GGUF"
+path   = "z_image_turbo-Q8_0.gguf"
+bytes  = 6577440704
+sha256 = "df1c5baa86d1398c979495a6072dbcee79444fdb884a2445582ba0769c44e9a1"
+state  = "serving"
+for    = "zimage"
+note   = "The sd.cpp author's own conversion."
+
+[[weights]]
+file   = "Qwen3-4B-Instruct-2507-Q8_0.gguf"
+repo   = "unsloth/Qwen3-4B-Instruct-2507-GGUF"
+path   = "Qwen3-4B-Instruct-2507-Q8_0.gguf"
+bytes  = 4280405600
+sha256 = "391c1e410fd9f4cf2de2b510273b56a84c19ce18f4fa3bfb3774031dac4ef068"
+state  = "serving"
+for    = "zimage"
+note   = "Z-Image's text encoder, and it is the EXACT model Z-Image conditions on – the store's Qwen3.5-4B is a different model and cannot substitute. Q8_0 because the encoder runs once per prompt, so its cost is per gesture and not per step."
+
+[[weights]]
+file   = "flux-ae.safetensors"
+repo   = "ffxvs/vae-flux"
+path   = "ae.safetensors"
+bytes  = 335304388
+sha256 = "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38"
+verify_always = true
+state  = "serving"
+for    = "zimage"
+note   = "FLUX's autoencoder, which Z-Image reuses. NOT from black-forest-labs: that repo is gated and resolve/main 401s without a click-through, which cost the boot service six hours of retries on 2026-08-22. This mirror's sha256 matches across three independent mirrors, and it is the one row whose hash is checked after every pull rather than only its size – a re-upload at the same byte count is invisible to a size check, and the provenance is a third party."
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# REJECTED — negative knowledge, the kind most easily lost and most expensively relearnt.
+# Each of these looked plausible, was tried, and lost. Do not re-add without new evidence.
+# ─────────────────────────────────────────────────────────────────────────────────────
+
+[rejected.cache_reuse]
+setting  = "--cache-reuse 256"
+verdict  = "DEAD — remove on sight"
+match    = ["--cache-reuse"]
+evidence = "Every serve logs 'cache_reuse is not supported by this context, it will be disabled'. Gated on llama_memory_can_shift(), false for these models' attention geometry. It was present in five serve lines and had never done anything in any of them."
+
+[rejected.adaptive_speculation]
+setting  = "--spec-draft-adaptive (LaurentZuijdwijk/llama.cpp b10641)"
+verdict  = "NO GAIN on discursive generation, at any n-max"
+match    = ["--spec-draft-adaptive"]
+evidence = "Measured 2026-08-26 on the pinned Qwen3.8-27B UD-Q6_K_XL at 29k, production config, 8 samples per arm per workload. Controlled contrast (one binary, one flag): discursive -1.6% decode, enumerative +6.4%. At the fork's own MTP setting (n-min 2 n-max 4): -1.7% and +1.6%. The controller is live and behaves as designed — mean draft 2.98 fixed, 3.23/5.15 adaptive — but output tokens per target forward pass, which is deterministic and has no clock in it, moves +0.6%/-1.8% on discursive text: it buys nothing mechanically. Enumerative gains come with a 9-point acceptance drop (p=0.0011), which is the fork's own warning that for MTP the controller maximises accepted tokens rather than throughput. Caveat on power: 2 visits per arm, so the blocked-permutation floor is p=1/3 and the minimum detectable effect ~5%. Harness evaluations/models/adaptive-spec-ab.sh; working in WORK/model-serving.md 2026-08-25 (adaptive-spec)."
+
+[rejected.laurent_fork_for_ds4]
+setting  = "LaurentZuijdwijk/llama.cpp b10641 as ds4's engine"
+verdict  = "33-37% SLOWER than the Nathan pin — do not swap"
+match    = ["adaptive-fork/b10641"]
+evidence = "Measured 2026-08-26 head-to-head on ds4 UD-IQ3_XXS at 28k: Nathan v0.6.1 prefill 203.8 / decode 17.33-17.84 (reproducing this file's recorded 17.28 +- 0.02), Laurent b10641 prefill 137.4 / decode 11.05-11.21. Binary and driver moved together (Nathan's bundled RADV vs host Mesa 26.1.5); a driver-isolation arm exists in the harness and was not run. Nathan's fork is Strix MoE/FA shader work with seven GGML_VK_MMID_* gates on by default, which is where ds4's MoE lives. On the DENSE Qwen3.8-27B the same Laurent build is +12.5% prefill, so the sign is model-shape-dependent, not general. Harness evaluations/models/ds4-fork-ladder.sh."
+
+[rejected.dflash]
+setting  = "--spec-type draft-dflash (Laguna, poolside fork build)"
+verdict  = "NET LOSS on this hardware"
+match    = ["draft-dflash"]   # NOT "--spec-type": draft-mtp on the 35B is a net WIN (~52% acceptance)
+evidence = "Validated 2026-07-27: draft acceptance 17.2% (121/705, mean accepted length 1.68) → 21.4 tok/s against 30.8 without. A 31% slowdown. The build works; the draft is simply not accepted often enough to pay for verification. Also costs ~7.8 GiB, not the 1.1 GiB of its weights, because it needs its own KV cache. Retest only at --spec-draft-n-max 15 (the model's own generation_config value) with a Q4_K_M draft, and only after the draft is regenerated against the corrected weights."
+
+[rejected.cache_ram_raise]
+setting  = "--cache-ram 16384 (raising the prompt-cache budget above the 8192 MiB default)"
+verdict  = "OOM-KILLS THE SERVER at 262144 context"
+match    = ["--cache-ram 16384", "--cache-ram 24576"]
+evidence = "Tried 2026-07-27 to recover re-prefill from the 67 evictions logged in the laguna-ctx run. The kernel OOM-killer took llama-server 59 minutes in, at total-vm 97.8 GiB; r1 completed, r2/r3 were all 'Connection error'. THE REASONING ERROR IS THE REUSABLE PART: the flag was accepted on the argument that it spends *host* RAM rather than VRAM, so there was headroom. On Strix Halo the GPU memory is UNIFIED — GTT *is* system RAM — so there is no second pool to spend. Laguna at 262144 already occupies 81.8 GiB of 124 GB. Any future rise must be costed against GTT, not against nominally free host RAM."
+
+[rejected.kv_quantisation]
+setting  = "--cache-type-k/-v q8_0"
+verdict  = "WORSE AND SLOWER — do not use for recall"
+match    = ["--cache-type-k q8_0", "--cache-type-v q8_0", "-ctk q8_0", "-ctv q8_0"]
+evidence = "Directly measured on Laguna (25 coding tasks): q8_0 KV gave 76.0% success vs 88.0% full, AND 29% more wall time. Inverts the usual intuition. For a recall task where fabrication is the cardinal sin this is a clear no — and we do not need it: 48.8 KiB/token shows llama.cpp already exploits Laguna's sliding-window attention (only 12 of 48 layers hold full-length KV)."
+
+[rejected.presence_penalty]
+setting  = "presence_penalty 1.5 (Qwen3.5/3.6 card recommendation for general thinking tasks)"
+verdict  = "DISQUALIFIED for recall"
+match    = ["--presence-penalty 1.5"]
+evidence = "runs/35b-think vs runs/35b-think-nopp (3x each, 2026-07-27): with presence 1.5, Q4 — the known-answer Librela date regression — scored 0/3; without it, 3/3. Penalties key on token identity and eat repeated dates, entity names and wikilinks, all of which are scored metrics here. Officially recommended and empirically wrong for this workload."
+
+[rejected.low_temperature]
+setting  = "temp 0.6-0.7 (Laguna and the 122B)"
+verdict  = "COSTS FAITHFULNESS AND LANDMARKS"
+match    = ["--temp 0.6", "--temp 0.7"]
+evidence = "Laguna at temp 0.7 produced factual corruption – 'Metzinger'→'Metzberg', a 2026 note dated 2024, the long-tail mode-collapse signature (2026-07 Laguna record, git history). The 122B at temp 0.6 (the card's *precise-coding* line, which is also what its shipped generation_config carries) missed three gold landmarks that temp 1.0 recovers: Q5 2026-03-12 0/3→2/3, Q6 2019-03-19 0/3→1/3, Q6 2025-10-15 0/3→2/3. For BOTH models: recall is a general task, not a coding one."
+
+[rejected.prompt_search_bound]
+setting  = "A prompt-level 'stop searching after ~N tool calls' instruction"
+verdict  = "FAILED AND DID HARM"
+match    = []   # prompt-level, not a serve flag — nothing to grep for
+evidence = "runs/laguna-bound (3x, 2026-07-27): no reduction in empties, and on Q5 it ran ZERO qmd queries across all three repeats — falling back to bare grep, the anti-pattern APPEND_SYSTEM forbids — with grounding down ~40%. Two general lessons: the empties are READ-dominated (27-28 file reads against 17-20 bash calls), so a bound phrased against *searching* misses the actual context filler; and a self-counted budget asks the model for arithmetic over a transcript it cannot observe. Bound the loop mechanically or not at all."

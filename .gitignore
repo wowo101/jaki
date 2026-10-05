@@ -1,0 +1,5 @@
+# jaki – per-machine state that never belongs in a clone
+engine/.hatch/
+__pycache__/
+*.pyc
+.env

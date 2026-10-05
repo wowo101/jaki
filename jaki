@@ -1,0 +1,364 @@
+#!/usr/bin/env bash
+# jaki – install, check and run the local AI server described in machines/jaki/README.md.
+#
+#   ./jaki install <address>   write this machine's config, deploy the services, fetch the
+#                              binaries, the resident's engine image, the speech models and
+#                              the chat surface's image, and start the weights download
+#   ./jaki check               every weight, binary, speech model and deployed file, by name
+#   ./jaki start               start the router and the chat surface, once the weights are there
+#   ./jaki stop                stop both
+#   ./jaki status              units, loaded models, and where the weights download is
+#   ./jaki smoke [address]     one request per modality, each answer checked by its content
+#   ./jaki client-config openai|pi [address]
+#                              a client's settings for this server, from the registry
+#
+# <address> is what other devices reach this machine on: an IP or hostname, with or without
+# a port (9090 is the default) or an http:// prefix. Not 127.0.0.1 – the server binds this one
+# address and nothing else, so loopback is dead on the machine itself. smoke and client-config
+# default to this machine's address; run anywhere else, they need it given.
+#
+# Every step prints the command it runs before running it, so this file doubles as the manual
+# path. It calls two subcommands of the repository's installer, `hatch install` and
+# `hatch doctor`, and the three fetchers the installer puts on PATH, and client-config reads
+# `engine/models.toml`; nothing else in the repository.
+set -uo pipefail
+
+ROOT=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+# The same derivation as the installer's (engine/provisioner/config.py): lowercase, `.local`
+# stripped. `uname -n`, because `hostname` is a separate package on Arch and may be absent.
+HOST=$(uname -n); HOST=${HOST,,}; HOST=${HOST%.local}
+[ -n "$HOST" ] || { echo "jaki: cannot read this machine's hostname" >&2; exit 1; }
+USER_NAME=${USER:-$(id -un)}
+TOML="$ROOT/machines/$HOST.toml"
+LOG="$HOME/.local/share/box-model-eval/download.log"
+OWUI_IMAGE=$(grep -o -m1 'ghcr\.io/open-webui/open-webui:[^[:space:]]*' "$ROOT/engine/infra/model-serving/open-webui.service")
+[ -n "$OWUI_IMAGE" ] || { echo "jaki: no open-webui image named in engine/infra/model-serving/open-webui.service" >&2; exit 1; }
+ORIGINAL_PATH=$PATH
+export PATH="$HOME/.local/bin:$PATH"
+
+say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
+run()  { printf '  → %s\n' "$*"; "$@"; }
+die()  { printf 'jaki: %s\n' "$*" >&2; exit 1; }
+
+usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# normalise_address <arg> -> http://host:port/v1 on stdout, or fail. Accepts a hostname or IPv4
+# with or without :port, an IPv6 address in brackets ([fe80::1] or [fe80::1]:9090), and an
+# http:// prefix in any case. It runs in a subshell at the call site, so its `die` only fails
+# the substitution; the caller checks the status.
+normalise_address() {
+  local a="$1" host port
+  shopt -s nocasematch
+  [[ $a =~ ^https?:// ]] && a=${a#*://}
+  shopt -u nocasematch
+  a=${a%%/*}
+  [ -n "$a" ] || die "no address given. Usage: ./jaki install <address>"
+  if [[ $a == \[* ]]; then
+    host=${a%%]*}]; port=${a#*]}; port=${port#:}
+  else
+    case "$a" in *:*:*) die "$a looks like a bare IPv6 address; write it in brackets, [addr] or [addr]:port" ;; esac
+    host=${a%%:*}; port=${a#"$host"}; port=${port#:}
+  fi
+  [ -n "$port" ] || port=9090
+  [[ $port =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "$a: the port is not a number between 1 and 65535"
+  case "$host" in
+    127.*|localhost|0.0.0.0|'[::1]'|'[::]') die "$host is loopback; use the address other devices reach this machine on" ;;
+  esac
+  printf 'http://%s:%s/v1' "$host" "$port"
+}
+
+need_prereqs() {
+  local missing=() b
+  for b in git python3 curl tar unzip podman systemctl loginctl uname; do
+    command -v "$b" >/dev/null 2>&1 || missing+=("$b")
+  done
+  if [ ${#missing[@]} -gt 0 ]; then
+    printf 'jaki: missing: %s\n' "${missing[*]}" >&2
+    printf '  Arch:   sudo pacman -S git python curl tar unzip podman\n' >&2
+    printf '  Fedora: sudo dnf install git python3 curl tar unzip podman\n' >&2
+    exit 1
+  fi
+  python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
+    || die "python3 is $(python3 -V 2>&1); 3.11 or newer is needed"
+  # The resident's engine (gufo, ROCm) runs in a container handed /dev/kfd and /dev/dri.
+  [ -e /dev/kfd ] || die "no /dev/kfd: the resident's engine needs the amdgpu driver's compute device (a Strix Halo GPU)"
+}
+
+ensure_linger() {
+  if [ "$(loginctl show-user "$USER_NAME" -p Linger --value 2>/dev/null)" != "yes" ]; then
+    say "Letting your services outlive your login"
+    run loginctl enable-linger "$USER_NAME" \
+      || printf 'jaki: could not enable lingering; run `loginctl enable-linger %s` yourself, or the services stop at logout\n' "$USER_NAME" >&2
+  fi
+}
+
+write_toml() {
+  local url="$1"
+  cat > "$TOML" <<EOF
+# Written by \`jaki install\` on $(date -I). Reviewed by hand is fine; \`./hatch install\` reads it.
+role        = "engine"
+description = "$HOST – jaki, the local AI server"
+
+[endpoints]
+# THE ONE ADDRESS. Everything else the serving tier needs is derived from this line: what the
+# router binds, what the chat surface binds and talks to. Not loopback.
+serve_url = "$url"
+
+[artefacts]
+# gpu-lease: the arbiter the serving guard asks before a model load; a second job that
+# wants the GPU queues on it instead of evicting what is running.
+verbs   = ["gpu-lease"]
+apps    = []
+infra   = ["model-serving", "model-store"]
+plugins = []
+
+[units]
+enabled = [
+  "llama-swap.service",
+  "open-webui.service",
+  "hatch-pressure-watch.service",
+  "download-candidates.service",
+]
+EOF
+}
+
+cmd_install() {
+  need_prereqs
+  local url=""
+  if [ $# -ge 1 ]; then url=$(normalise_address "$1") || exit 1; fi
+  if [ -f "$TOML" ]; then
+    # Read with a TOML parser, the way the installer does; a hand-edited file may use single
+    # quotes or put the key on a commented line.
+    local have infra
+    have=$(python3 -c 'import tomllib,sys; print(tomllib.load(open(sys.argv[1],"rb")).get("endpoints",{}).get("serve_url",""))' "$TOML") \
+      || die "$TOML does not parse as TOML"
+    infra=$(python3 -c 'import tomllib,sys; print(" ".join(tomllib.load(open(sys.argv[1],"rb")).get("artefacts",{}).get("infra",[])))' "$TOML")
+    if [ -n "$url" ] && [ "$have" != "$url" ]; then
+      die "$TOML already exists with serve_url = \"$have\". Edit it or delete it, then run again."
+    fi
+    case " $infra " in *" model-serving "*) ;; *) die "$TOML exists and does not list model-serving under [artefacts].infra. Edit it, then run again." ;; esac
+    [ -n "$have" ] || die "$TOML has no [endpoints].serve_url; add one, then run again."
+    url=$have
+    say "Using the existing $TOML ($url)"
+  else
+    [ -n "$url" ] || die "no config for $HOST yet. Usage: ./jaki install <address>"
+    say "Writing $TOML"
+    write_toml "$url"
+    printf '  serve_url = "%s"\n' "$url"
+  fi
+  ensure_linger
+
+  say "Deploying the services and the router config"
+  run "$ROOT/hatch" install || die "hatch install failed; fix what it printed and run again"
+  if ! printf '%s' "$ORIGINAL_PATH" | tr ':' '\n' | sed 's#/$##' | grep -qx -e "$HOME/.local/bin" -e '~/.local/bin'; then
+    printf '\n  NOTE: put ~/.local/bin on your PATH; the installed commands live there.\n'
+  fi
+
+  say "Fetching the engines, the router and the image server (~90 MB, and a ~2.9 GB container image for the resident; digests checked)"
+  run serving-binaries || die "serving-binaries failed"
+
+  say "Fetching the speech server image (~1 GB) and its models (~2 GB)"
+  run speaches-models || die "speaches-models failed"
+
+  say "Fetching the chat surface's image (~4 GB)"
+  if podman image exists "$OWUI_IMAGE"; then
+    printf '  already present\n'
+  else
+    run podman pull "$OWUI_IMAGE" || die "podman pull failed. On a link where it keeps dying, run owui-bringup and watch /tmp/owui-bringup.log"
+  fi
+
+  say "Starting the weights download (~120 GiB, resumes across restarts and reboots)"
+  run systemctl --user start download-candidates || die "could not start the download service; see: journalctl --user -u download-candidates"
+
+  say "Next"
+  cat <<EOF
+  watch the weights arrive:   tail -f $LOG
+  when it says the store matches, check everything and start the server:
+                              ./jaki check && ./jaki start
+  then open the chat surface and create the first account, which becomes the admin:
+                              $(webui_url)
+EOF
+}
+
+# The chat surface binds the address the machine stated (HATCH_SERVE_HOST), so that is the URL
+# that opens from any device that can reach it. HATCH_WEBUI_URL carries the hostname instead,
+# which resolves only where something like MagicDNS makes it.
+webui_url() {
+  local h
+  h=$(grep -m1 '^HATCH_SERVE_HOST=' "$HOME/.config/hatch/env" 2>/dev/null | cut -d= -f2-)
+  if [ -n "$h" ]; then printf 'http://%s:3000' "$h"; else printf 'http://<your address>:3000'; fi
+}
+
+serve_url() {
+  grep -m1 '^HATCH_SERVE_URL=' "$HOME/.config/hatch/env" 2>/dev/null | cut -d= -f2-
+}
+
+cmd_check() {
+  local fail=0
+  say "Weights, at their exact sizes";      run download-candidates --check || fail=1
+  say "Binaries and the engine image, from the pinned digests"; run serving-binaries --check || fail=1
+  say "Speech models, cached";              run speaches-models --check     || fail=1
+  say "Deployed commands, units and config files"; run "$ROOT/hatch" doctor || fail=1
+  if [ "$fail" = 0 ]; then say "Everything is in place."; else say "Something is missing; see above."; fi
+  return $fail
+}
+
+cmd_start() {
+  if ! download-candidates --check >/dev/null 2>&1; then
+    if [ "${1:-}" != "--anyway" ]; then
+      die "the weights are not all there yet (download-candidates --check). Watch $LOG, or start anyway with: ./jaki start --anyway"
+    fi
+  fi
+  say "Starting the router and the chat surface"
+  run systemctl --user start llama-swap open-webui hatch-pressure-watch || die "could not start the services; see: journalctl --user -u llama-swap -u open-webui"
+  cat <<EOF
+
+  API:   $(serve_url)   (the model field is the route: qnext, qwen3.5-4b, zimage, or a speech model id)
+  chat:  $(webui_url)   (the first start takes 10–20 minutes before the port opens)
+EOF
+}
+
+cmd_stop() {
+  say "Stopping the chat surface and the router"
+  run systemctl --user stop open-webui hatch-pressure-watch llama-swap || die "could not stop the services; see: journalctl --user -u llama-swap -u open-webui"
+}
+
+cmd_status() {
+  local u
+  say "Units"
+  for u in llama-swap open-webui hatch-pressure-watch download-candidates; do
+    printf '  %-20s %s\n' "$u" "$(systemctl --user is-active "$u" 2>/dev/null)"
+  done
+  say "Loaded models"
+  local url; url=$(serve_url)
+  if [ -n "$url" ]; then
+    curl -sS -m 5 "${url%/v1}/running" 2>/dev/null \
+      | python3 -c 'import json,sys; r=json.load(sys.stdin).get("running",[]); print("  " + (", ".join(m["model"] for m in r) if r else "none – each model loads on its first request"))' 2>/dev/null \
+      || printf '  the router is not answering at %s\n' "${url%/v1}"
+  else
+    printf '  not installed yet (no ~/.config/hatch/env)\n'
+  fi
+  say "Weights download, last line"
+  printf '  %s\n' "$(tail -n 1 "$LOG" 2>/dev/null || echo "no log yet at $LOG")"
+}
+
+# The address smoke and client-config talk to: the argument, or this machine's own.
+target_url() {
+  if [ $# -ge 1 ] && [ -n "$1" ]; then normalise_address "$1"; return; fi
+  local u; u=$(serve_url)
+  [ -n "$u" ] || die "this machine has no jaki installed; give the address, as in: ./jaki $USAGE_HINT"
+  normalise_address "$u"
+}
+
+# One request per modality, each checked by what came back: an HTTP 200 with an empty body is
+# a failure the engine can produce, so no check stops at the status.
+cmd_smoke() {
+  local url; url=$(target_url "${1:-}") || exit 1
+  say "One request per modality against $url (a model that is not loaded yet pays its load)"
+  python3 - "$url" <<'PY'
+import base64, json, sys, time, urllib.error, urllib.request
+base = sys.argv[1]
+def post(path, body, form=None):
+    if form:
+        boundary = "jakismoke"
+        data = b"".join(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"".encode()
+            + (f"; filename=\"{v[0]}\"\r\n\r\n".encode() + v[1] if isinstance(v, tuple) else f"\r\n\r\n{v}".encode())
+            + b"\r\n" for k, v in form.items()) + f"--{boundary}--\r\n".encode()
+        ctype = f"multipart/form-data; boundary={boundary}"
+    else:
+        data, ctype = json.dumps(body).encode(), "application/json"
+    req = urllib.request.Request(base + path, data=data, headers={"Content-Type": ctype})
+    with urllib.request.urlopen(req, timeout=900) as r:
+        return r.read()
+def chat(model, word):
+    out = json.loads(post("/chat/completions", {"model": model, "temperature": 0, "max_tokens": 2000,
+        "messages": [{"role": "user", "content": f"Reply with the single word {word} and nothing else."}]}))
+    choice = out["choices"][0]
+    text = choice["message"].get("content") or ""
+    return word in text.upper(), f"{text[:80]!r}, finish_reason {choice.get('finish_reason')}"
+def image():
+    out = json.loads(post("/images/generations", {"model": "zimage", "prompt": "a lighthouse at dusk", "size": "512x512", "n": 1}))
+    png = base64.b64decode(out["data"][0]["b64_json"])
+    return png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 50_000, f"{len(png):,} bytes"
+def speech():
+    wav = post("/audio/speech", {"model": "speaches-ai/Kokoro-82M-v1.0-ONNX", "voice": "af_heart",
+                                 "input": "The tide turns at four.", "response_format": "wav"})
+    if wav[:4] != b"RIFF":
+        return False, f"speech out: {len(wav)} bytes, not a WAV"
+    text = json.loads(post("/audio/transcriptions", None, form={
+        "model": "deepdml/faster-whisper-large-v3-turbo-ct2", "file": ("tide.wav", wav)}))["text"]
+    return "tide" in text.lower(), f"{len(wav):,} bytes of speech, heard back as {text.strip()!r}"
+fails = 0
+for name, fn in [("chat, qnext", lambda: chat("qnext", "PELICAN")),
+                 ("mechanical, qwen3.5-4b", lambda: chat("qwen3.5-4b", "CORMORANT")),
+                 ("image, zimage", image),
+                 ("speech out and back in", speech)]:
+    t = time.monotonic()
+    try:
+        ok, seen = fn()
+    except urllib.error.HTTPError as e:
+        ok, seen = False, f"HTTP {e.code}: {e.read()[:200]!r}"
+    except Exception as e:  # an empty 200 lands here as a JSON error; any failure is reported, never raised
+        ok, seen = False, f"{type(e).__name__}: {e}"
+    fails += not ok
+    print(f"  {'ok  ' if ok else 'FAIL'}  {name:24} {time.monotonic() - t:5.1f} s  {seen}")
+sys.exit(1 if fails else 0)
+PY
+}
+
+# A client's settings, built from the registry so no copy of a model id can outlive the model.
+cmd_client_config() {
+  local kind="${1:-}"; shift || true
+  case "$kind" in openai|pi) ;; *) die "which client? ./jaki client-config openai|pi [address]" ;; esac
+  local url; url=$(target_url "${1:-}") || exit 1
+  python3 - "$kind" "$url" "$ROOT/engine/models.toml" <<'PY'
+import json, sys, tomllib
+kind, url, registry = sys.argv[1:]
+models = tomllib.load(open(registry, "rb"))["models"]
+if kind == "openai":
+    print(f"OPENAI_BASE_URL={url}")
+    print("OPENAI_API_KEY=none")
+    sys.exit()
+entries, default, compaction, effort = [], None, None, None
+for m in models.values():
+    pi = m.get("pi")
+    if not pi:
+        continue
+    e = {"id": m["swap_id"], "contextWindow": pi["context_window"]}
+    if pi.get("reasoning"):
+        e["reasoning"] = True
+    entries.append(e)
+    if m.get("role") == "resident":
+        default, compaction = m["swap_id"], pi.get("compaction")
+        effort = m.get("serve", {}).get("reasoning_effort")
+if default is None:
+    sys.exit("the registry names no resident with a [models.<name>.pi] block")
+print("~/.pi/agent/models.json (merge into what is there)")
+print(json.dumps({"providers": {"jaki": {"baseUrl": url, "api": "openai-completions",
+                                         "apiKey": "none", "models": entries}}}, indent=2))
+settings = {"defaultProvider": "jaki", "defaultModel": default}
+if effort:
+    # A reasoning model makes Pi send its own effort, medium by default, over the server's.
+    settings["defaultThinkingLevel"] = effort
+if compaction:
+    settings["compaction"] = {"reserveTokens": compaction["reserve_tokens"],
+                              "keepRecentTokens": compaction["keep_recent_tokens"]}
+print("\n~/.pi/agent/settings.json (merge into what is there)")
+print(json.dumps(settings, indent=2))
+PY
+}
+
+CMD="${1:-help}"
+case "$CMD" in smoke) USAGE_HINT="smoke <address>" ;; *) USAGE_HINT="client-config openai|pi <address>" ;; esac
+case "$CMD" in
+  install) shift; cmd_install "$@" ;;
+  check)   cmd_check ;;
+  start)   shift; cmd_start "$@" ;;
+  stop)    cmd_stop ;;
+  status)  cmd_status ;;
+  smoke)   shift; cmd_smoke "$@" ;;
+  client-config) shift; cmd_client_config "$@" ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 2 ;;
+esac

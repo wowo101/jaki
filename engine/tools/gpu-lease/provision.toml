@@ -1,0 +1,8 @@
+kind     = "verb"
+exec     = "gpu-lease"
+# The verb is a shim over engine/apps/gpu-lease, stdlib Python, so python3 is the one
+# runtime. The systemd trio carries the transient units, the idle inhibitor and the
+# resident's lifecycle; pgrep is the holder scan. All are base-system binaries on both
+# Linux machines, so this verb deploys wherever it is listed.
+requires = ["python3", "systemctl", "systemd-run", "systemd-inhibit", "pgrep"]
+needs    = []

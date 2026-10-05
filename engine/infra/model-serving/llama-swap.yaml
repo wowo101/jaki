@@ -1,0 +1,306 @@
+# llama-swap – THE BOX'S ONE SERVING ADDRESS (:9090).
+#
+# **Status:** current (2026-09-28). Everything the box serves is here: the resident qnext,
+# the 4B delegate, image generation, and speech in and out. The chat surface and every
+# other client point at this one address, and there is no
+# `hatch-llama-server.service` any more – that unit retired with the 35B it served.
+#
+# WHAT THIS IS. One OpenAI-compatible endpoint. A request names a model id, llama-swap
+# starts that entry if it is not up and proxies to it. The four entries below sit in ONE
+# non-swapping group: `swap: false` means loading one never unloads another, so they
+# ACCUMULATE as they are asked for. It does not preload anything – a freshly started router
+# holds nothing. See `groups` at the bottom for the measurement that lets them coexist, and for
+# what group membership means for the entry that holds no GPU.
+#
+# ONE MODEL IN THE LIST, four behind it. `unlisted: true` keeps the delegate, the image
+# server and the speech server out of `/v1/models` while leaving them routable by id, which
+# is the no-model-menu decision (2026-09-08) implemented rather than merely
+# configured. Open WebUI therefore shows exactly one model and no dropdown to get wrong.
+# Clients that want the delegate reach it by naming `qwen3.5-4b`.
+#
+# SERVING PROFILES ARE COPIED FROM `engine/models.toml`, which is canonical. When a profile
+# changes there, change it here. The registry's [rejected.*] section is binding: no
+# --cache-reuse (dead on every model), no presence_penalty 1.5, no q8_0 KV, no temp 0.6/0.7.
+#
+# SINGLE-QUOTE ANY ARGUMENT CONTAINING DOUBLE QUOTES. llama-swap tokenises `cmd` with shell
+# quoting rules, so a bare `--chat-template-kwargs {"reasoning_effort":"low"}` reaches
+# llama-server as `{reasoning_effort:low}` – invalid JSON, and it exits on the spot. The
+# entry then fails only when someone calls it, which is why it can sit broken for weeks.
+# Verified by dumping llama-swap's own argv (2026-08-15).
+#
+# THREE LAUNCH SHAPES, and which one an entry uses decides whether it needs cmdStop and
+# whether it goes through the admission guard.
+#
+# Host-binary entries (${fork}, and zimage) have NO cmdStop. For ${fork} guard, launcher and
+# server are one pid: hatch-serving-guard execs the binary, which execs the real server, so
+# llama-swap's own SIGTERM lands on it. zimage's guard execs hatch-image-front, which runs
+# sd-server as its child and passes SIGTERM on to it before exiting. That also makes the process indistinguishable from an
+# eval's by name alone, which is why hatch-serving-guard attributes it by llama-swap's cgroup.
+# A toolbox entry is not used: it needed `toolbox create` on every machine and a cmdStop,
+# because `toolbox run` is a podman-exec wrapper that leaves the real server alive when killed.
+#
+# A GPU container (the resident, gufo) runs `podman run` behind the guard, with a cmdStop and
+# its container named in HATCH_CHAT_CONTAINERS in engine/lib/gpu-binaries.env, because its
+# server sits in the container's cgroup and not in llama-swap's. The guard sizes it from the
+# registry (`resident_gib`), since its weight paths are container paths. Its entry says why
+# each part is there.
+#
+# Container entries that hold no GPU (`speech`) run `podman run` directly and take NO guard.
+# The guard's whole job is refusing a GPU load, and it refuses for the length of any eval or
+# any `--resident stop` lease; putting a CPU-only service behind it would close speech every
+# time the GPU is busy, for a load that was never going to compete. Their cmdStop is NOT the
+# toolbox's reason – an attached `podman run` does proxy the signal. It is there so `--replace`
+# on the next start has nothing to clean up, and so the stop is bounded by a timeout we pick.
+
+healthCheckTimeout: 1800      # qnext is 104 GiB of weights; ready in 25-30 s from page cache
+                              # and 65-95 s otherwise (engine/models.toml [models.qnext.serve].note)
+logLevel: info
+startPort: 10001
+
+# NO MACHINE'S PATHS. `${env.HATCH_HOME}` is resolved by llama-swap out of its own process
+# environment at config load, and it RAISES when the variable is unset rather than binding a
+# path that does not exist. llama-swap.service supplies it from engine/.hatch/resolved.env,
+# which `hatch install` writes from the machine's own toml. That is what lets a second machine
+# install this file unedited.
+macros:
+  store: "${env.HATCH_HOME}/.local/share/models/gguf"
+
+  # Where each llama-server writes its own log. llama-swap keeps a child's stderr in its
+  # own in-memory buffer and forwards none of it to stdout, so nothing a spawned server
+  # says reaches the unit journal - verified 2026-09-11 by loading the delegate and finding
+  # zero `llama_model_loader`, `srv ` or `stop processing` lines in the journal while the
+  # request itself logged 200. `--log-file` is therefore the only route to a server's own
+  # release lines, and `engine/apps/depth-log/` reads these files by byte offset.
+  # The directory is created by llama-swap.service's ExecStartPre; llama-server does not
+  # create a missing parent and exits if it cannot open the file.
+  logdir: "${env.HATCH_HOME}/.local/state/llama-swap-logs"
+
+  # The pinned llama.cpp build the delegate serves on: Nathan's lineage, a host binary with its
+  # own bundled RADV. ITS PATH IS NOT WRITTEN HERE. `${env.HATCH_BIN_LLAMA_SERVER}` is emitted by
+  # `hatch install` from the `[[binaries]]` row in engine/models.toml, which is where the
+  # version lives, so a bump is one edit. ANY BUMP IS GATED on
+  # evaluations/models/apepojken-plain-control.sh reading 9/9 before the new build serves.
+  # NOTE THE `vulkan/` in that row's path: v0.6.1 unpacked its backend directory's contents at
+  # the top level and every release since keeps the directory, and llama-swap reports a
+  # missing binary as `upstream command exited prematurely`, which reads like a bad flag.
+  fork: >-
+    ${env.HATCH_HOME}/.local/bin/hatch-serving-guard
+    ${env.HATCH_BIN_LLAMA_SERVER}
+    --host 127.0.0.1 --port ${PORT}
+
+
+models:
+
+  # ── the resident ───────────────────────────────────────────────────────────────────
+  # Qwen3.8-Flash-Next on gufo: the box's only large model, and the only one this file lists.
+  # Profile copied from engine/models.toml [models.qnext.serve] + .vision.
+  #
+  # A GUARDED GPU CONTAINER, the third launch shape in the header. gufo is a C++/HIP engine for
+  # gfx1151 on ROCm 7.2.3, shipped only as a container image, so this is a `podman run` behind
+  # the guard. What that shape needs, each of which breaks something when dropped:
+  #   ${env.HATCH_IMG_GUFO_RUNTIME}  the image by digest (`ref@sha256:…`), which `hatch install`
+  #               emits from the [[images]] row. Never a tag: the upstream rebuilds its tags.
+  #   HATCH_SWAP_ID  the guard sizes a container from `resident_gib` in the registry block with
+  #               this swap_id (84); its weight paths are container paths it cannot stat.
+  #   hatch-qnext in HATCH_CHAT_CONTAINERS (gpu-binaries.env)  the server sits in the container's
+  #               cgroup, and without the name the guard reads it as a foreign GPU owner and
+  #               refuses every other load (exit 97), and the lease headlines it as NO LEASE.
+  #   cmdStop     the container runs in its own libpod scope and can outlive a router restart,
+  #               after which the guard refuses the next start with exit 98.
+  #   checkEndpoint /ready  gufo's /health answers before the model has loaded.
+  #   --cache-disk-staging-bytes  the default (the smallest of 1 GiB, RAM/8 and the disk budget)
+  #               skips the 1.4-1.5 GB snapshots a 40-60k conversation produces (gufo #259, #279).
+  #
+  # The store is flat: gufo finds the other three shards beside the first. The n-gram table is
+  # read from disk and holds no page cache, so 104 GiB of weights hold 84 GiB resident.
+  #
+  # Effort is `--reasoning-effort low`, server-side like the llama.cpp serve's
+  # --chat-template-kwargs was; sampling is gufo's own flags with the registry's values.
+  # The server's log is the container's: `journalctl --user CONTAINER_NAME=hatch-qnext`.
+  qnext:
+    name: "Qwen3.8-Flash-Next"
+    description: >-
+      The machine's model. Chat, search over your notes, drafting, and it reads images. About
+      35 tokens a second at chat depth. Its German is poor and drops the occasional Chinese
+      word where a German one belongs.
+    cmd: |
+      ${env.HATCH_HOME}/.local/bin/hatch-serving-guard
+      /usr/bin/podman run --rm --replace --name hatch-qnext
+      --network host --userns=keep-id --group-add keep-groups
+      --device /dev/kfd --device /dev/dri --ulimit memlock=-1
+      -v ${store}:/models:ro
+      -v ${env.HATCH_HOME}/.local/state/gufo-cache:/cache
+      ${env.HATCH_IMG_GUFO_RUNTIME}
+      gufo serve --host 127.0.0.1 --port ${PORT} llm
+      --model /models/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
+      --served-model-name qnext --context 65536 --sessions 2
+      --cache-ram-bytes 4294967296 --max-pending-per-client 16
+      --speculative mtp --mtp-model /models/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf
+      --mmproj /models/Qwen3.8-Flash-Next-mmproj-BF16.gguf
+      --reasoning-effort low
+      --temperature 1.0 --top-p 0.95 --top-k 20 --min-p 0.0
+      --presence-penalty 0.0 --repeat-penalty 1.0
+      --cache-disk /cache --cache-disk-staging-bytes 8589934592
+    cmdStop: /usr/bin/podman stop -t 30 hatch-qnext
+    checkEndpoint: /ready
+    env:
+      - "HATCH_SWAP_ID=qnext"
+    ttl: 0                      # never unload: this is the standing resident
+
+  # ── the delegate ───────────────────────────────────────────────────────────────────
+  # Qwen3.5-4B. Since 2026-09-08 this is what document tagging and transcript cleanup resolve
+  # to; a client names this id. Profile: engine/models.toml
+  # [models.qwen4b.serve]. Thinking OFF matters: with thinking on it spends the whole token
+  # budget on reasoning_content and returns empty tags at finish_reason=length.
+  #
+  # ON THE PINNED HOST BINARY since 2026-09-11, Nathan's llama.cpp. Every tagging
+  # number in the registry was measured on that binary (delegate-serve.sh); only production
+  # served from the toolbox, so this brings the serve in line with what was measured and drops
+  # one container from the install. The flags are delegate-serve.sh's geometry.
+  qwen3.5-4b:
+    name: "Qwen3.5-4B – the delegate"
+    description: >-
+      Fast, shallow, does not think. Tagging passes and transcript cleanup. Never measured on
+      recall or tool use – treat agent work on it as unknown.
+    cmd: |
+      ${fork}
+      -m ${store}/Qwen3.5-4B-UD-Q4_K_XL.gguf
+      -ngl 999 -fa on --no-mmap --jinja
+      -np 1 -c 16384 -ub 512 --fit off
+      --log-file ${logdir}/qwen3.5-4b.log
+      --chat-template-kwargs '{"enable_thinking":false}'
+    # The guard reads this to hold the delegate's start while an image generates
+    # (HATCH_IMAGE_PAUSES in engine/lib/gpu-binaries.env).
+    env:
+      - "HATCH_SWAP_ID=qwen3.5-4b"
+    unlisted: true              # no dropdown; still routable by id
+    ttl: 0                      # never unloaded by the router; hatch-image-front pauses it per image
+
+  # ── image generation ───────────────────────────────────────────────────────────────
+  # Z-Image-Turbo via stable-diffusion.cpp's sd-server (host binary, Vulkan build 97d2990; all
+  # libs bundled). The guard execs hatch-image-front, which runs sd-server as its child and
+  # passes llama-swap's SIGTERM on to it – no cmdStop.
+  # Weights are split: the guard sizes all three files. Profile: engine/models.toml
+  # [models.zimage]. Generation via POST /v1/images/generations; sd-server also speaks A1111
+  # (/sdapi/v1) and its own async queue (/sdcpp/v1). Note sd-server spells the bind
+  # --listen-port, not --port. Turbo wants cfg-scale 1.0 and no negative prompt.
+  #
+  # Keeps its ttl rather than taking ttl: 0. An image gesture can afford a 15 s reload; the
+  # resident and the delegate cannot afford a request that waits on one.
+  zimage:
+    name: "Z-Image-Turbo – local image generation"
+    description: >-
+      Turns a written prompt into an illustration on the box. Concept imagery and essay
+      material, not diagrams – diagrams are better code-rendered.
+      Costs seconds per image and ~10 GiB while loaded; unloads after 15 minutes idle.
+    # hatch-image-front starts sd-server on a port of its own and proxies ${PORT} to it, so
+    # that before each generation it can pause the delegate (see its header). The guard still
+    # sizes the three weight files from the arguments after `--`.
+    cmd: |
+      ${env.HATCH_HOME}/.local/bin/hatch-serving-guard
+      ${env.HATCH_HOME}/.local/bin/hatch-image-front --port ${PORT} --
+      ${env.HATCH_BIN_SD_SERVER}
+      --listen-ip 127.0.0.1
+      --diffusion-model ${store}/z_image_turbo-Q8_0.gguf
+      --llm ${store}/Qwen3-4B-Instruct-2507-Q8_0.gguf
+      --vae ${store}/flux-ae.safetensors
+      --diffusion-fa --cfg-scale 1.0 --steps 8
+    # sd-server serves no /health (404, verified 2026-08-22); without this the default
+    # readiness probe never turns green and every request queues into healthCheckTimeout.
+    checkEndpoint: /
+    unlisted: true              # reached by its id at /v1/images/generations; Open WebUI has no image generation configured
+    ttl: 900
+
+  # ── speech in and speech out ───────────────────────────────────────────────────────
+  # speaches: faster-whisper for transcription, Kokoro and Piper for synthesis, behind the
+  # OpenAI audio endpoints. llama-swap v246 already routes /v1/audio/speech and the
+  # multipart /v1/audio/transcriptions, so this needs no router upgrade.
+  #
+  # CPU ONLY, AND NOT WRAPPED IN hatch-serving-guard. The guard exists to refuse a GPU load
+  # the box cannot hold, and it refuses whenever an eval or a --resident stop lease owns the
+  # GPU. This entry never touches the GPU, so wrapping it would close speech for the length
+  # of every battery for no reason. WHISPER__INFERENCE_DEVICE=cpu makes that structural
+  # rather than a claim: `auto` is the upstream default and would look for an accelerator.
+  #
+  # THE ALIASES ARE THE UPSTREAM MODEL IDS, and there is no useModelName rewrite. One
+  # container serves three models, and llama-swap starts one process per model id – so a
+  # short id per model would mean three containers. Aliasing one entry with the ids speaches
+  # itself uses keeps it to one container and forwards the request body untouched. A caller
+  # therefore names the model it actually gets.
+  #
+  # `whisper-1` is speaches' own alias and is NOT routed: it resolves to
+  # Systran/faster-whisper-large-v3, a second ASR weight set this box does not hold, and a 404
+  # is a better answer than fetching 1.5 GB nobody asked for. Its TTS twins ARE routed, for the
+  # reason spelled out on the alias list below.
+  #
+  # HF_HUB_OFFLINE=1 so a chat message can never start a multi-GB download over a slow
+  # uplink. Weights arrive through `speaches-models.sh`, which is the desired-state applier
+  # for this entry the way `download-candidates.sh` is for the GGUF store. A model that is
+  # missing fails the request with a clear error instead of silently pulling.
+  #
+  # WHISPER__CPU_THREADS caps faster-whisper at 8 of the box's 32 cores. Left at the upstream
+  # default of 0 it takes all of them, and a transcription then lands in the middle of
+  # whatever the resident is decoding.
+  #
+  # WHISPER__TTL is speaches' own idle unload, 300 s by default and left there: the container
+  # stands (ttl: 0 below) so the address always answers, while the ~1.6 GiB whisper model
+  # comes and goes underneath it.
+  speech:
+    name: "speaches – speech in and speech out"
+    description: >-
+      Transcription and speech synthesis on the box's CPU. Whisper large-v3-turbo in,
+      Kokoro (English) or Piper (German) out.
+    cmd: |
+      /usr/bin/podman run --rm --replace --name speaches
+      --network=host
+      -e UVICORN_HOST=127.0.0.1
+      -e UVICORN_PORT=${PORT}
+      -e ENABLE_UI=false
+      -e WHISPER__INFERENCE_DEVICE=cpu
+      -e WHISPER__COMPUTE_TYPE=int8
+      -e WHISPER__CPU_THREADS=8
+      -e HF_HUB_OFFLINE=1
+      -v speaches-hf-cache:/home/ubuntu/.cache/huggingface/hub
+      ghcr.io/speaches-ai/speaches:0.8.3-cpu
+    # Bounded, and it leaves `--replace` above nothing to clean up on the next start.
+    cmdStop: /usr/bin/podman stop -t 10 speaches
+    aliases:
+      - "deepdml/faster-whisper-large-v3-turbo-ct2"
+      - "speaches-ai/Kokoro-82M-v1.0-ONNX"
+      - "speaches-ai/piper-de_DE-thorsten-medium"
+      # OpenAI's own names for a TTS model, which speaches maps to the Kokoro entry above in
+      # its own model_aliases.json. Routed because Open WebUI's AUDIO_TTS_MODEL DEFAULTS to
+      # `tts-1` and that default is already in its database, so read-aloud posts it until
+      # someone opens Admin Settings → Audio. Without these two the box 404s its own
+      # out-of-the-box configuration.
+      - "tts-1"
+      - "tts-1-hd"
+    unlisted: true              # no dropdown; still routable by any id above
+    ttl: 0                      # never unloads ONCE STARTED; nothing preloads it, so the first
+                                # speech request after a router restart pays a container start
+
+groups:
+  # ONE GROUP HOLDING EVERYTHING, which is only correct because the pair was measured rather
+  # than calculated. `swap: false` means loading a member never unloads another, so all four can
+  # be up at once; `exclusive: false` and `persistent: true` are the belt for a future second
+  # group. NOTHING HERE PRELOADS: `hooks.on_startup.preload` exists in this llama-swap and is
+  # deliberately unused, because it fires a GET / at each named model and speaches serves no `/`
+  # with the UI off – it would log an error on every router start for a load that worked.
+  #
+  # MEASURED, and the state matters more than the number. The standing pair sits at 89.3 GiB
+  # GTT (gufo 84.0 + the 4B); one 1024x1024 image peaks at 106, and everything loaded and busy
+  # at once peaked at 110.1 with 6.9 GiB available (maxload, 2026-09-27). The 4B pauses for
+  # each image, the front refuses an image the box has no room for, and the pressure watcher
+  # unloads an idle zimage below 8 GiB (engine/infra/model-serving/README.md, *The admission
+  # guard*). The full table and its caveats: engine/models.toml [models.zimage].note, which is
+  # canonical for this.
+  box:
+    swap: false
+    exclusive: false
+    persistent: true
+    #
+    # SPEECH IS IN THIS GROUP AND IT HOLDS NO GPU. An entry named in no group lands in
+    # llama-swap's `(default)`, which is created with `exclusive: true` – so loading it would
+    # unload every member of this one. Membership here is what stops a dictation evicting the
+    # resident; it is not a claim about memory.
+    members: [qnext, qwen3.5-4b, zimage, speech]
