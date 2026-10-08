@@ -63,11 +63,11 @@ All numbers are for the main model (Qwen3.8 Flash Next) and measured on my Strix
 One router, [llama-swap](https://github.com/mostlygeek/llama-swap), holds the
 address and starts each model on its first request.
 
-* The main model, Qwen3.8-Flash-Next, runs on
+* The main model, [Qwen3.8-Flash-Next](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF), runs on
 [gufo](https://github.com/gufo-org/gufo), a HIP engine written for the Strix Halo GPU, in a
 [podman](https://github.com/podman-container-tools/podman) container pinned by digest. 
 * A complementary small
-model for delegated and batch tasks, Qwen3.5-4B, runs on [a llama.cpp build tuned for Strix
+model for delegated and batch tasks, [Qwen3.5-4B](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF), runs on [a llama.cpp build tuned for Strix
 Halo](https://github.com/Nathanw1014/strix-halo-llamacpp), and the image model, Z-Image-Turbo,
 on [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp); both are Vulkan
 binaries on the host.
