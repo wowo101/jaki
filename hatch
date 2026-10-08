@@ -3,7 +3,7 @@
 
 Brings a machine into the system: resolves what this host is, deploys the
 Layer-1 verbs / Layer-3 plugins its declared role calls for, and emits
-resolved config every artefact consumes. See specs/hatch-provisioner.md.
+resolved config every artefact consumes. See engine/provisioner/README.md.
 
 Stdlib-only by design — no install step before this runs.
 """

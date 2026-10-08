@@ -15,9 +15,8 @@ other request is forwarded as it is. Before a generation is forwarded it:
      asks the router to unload it (`POST /api/models/unload/<id>`). A model still busy after
      the wait is left loaded and the generation proceeds. llama-swap's unload does not wait for
      a request in flight, so one that arrives between the idle reading and the unload – a
-     window of milliseconds – is cut with a 5xx. Every caller of the delegate retries that:
-     `engine/lib/tagging.py` (`keep`, the inbox importer), the transcriber's `LlamaServer`,
-     and Paperless-ngx's AI through llama-index's `OpenAILike` (three attempts on a 5xx);
+     window of milliseconds – is cut with a 5xx. A caller of the delegate must retry that,
+     as llama-index's `OpenAILike` does (three attempts on a 5xx);
   3. admits it only if MemAvailable covers what an image adds plus a floor (NEED_*_GIB,
      FLOOR_GIB), waiting up to ADMIT_WAIT_S; otherwise answers 503 with the reason;
   4. forwards the request, one generation at a time.

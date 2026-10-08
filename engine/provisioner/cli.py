@@ -6,7 +6,7 @@ own tasks (Phase 0.6 / Phase 1) as they land.
 Anything that isn't a provisioner subcommand falls through to git-style verb
 dispatch: `hatch <verb> …` execs `engine/tools/<verb>/<verb>`. The verbs stay
 standalone commands (deployed onto PATH by `hatch install`); this is routing
-sugar, not a framework. See specs/integration-patterns.md.
+sugar, not a framework. See engine/provisioner/README.md.
 """
 import argparse
 import os

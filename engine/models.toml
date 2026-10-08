@@ -41,7 +41,7 @@
 #
 # WHAT IS NOT HERE: models that served and were retired, candidates assessed and not adopted,
 # and the weight files the box keeps without fetching. They are in `engine/models.archive.toml`,
-# same shape, split out 2026-09-11 so this file holds only what a fresh machine needs.
+# same shape, which a jaki checkout does not carry; this file holds only what a fresh machine needs.
 #
 # WHAT READS IT: `engine/models-check.py` verifies the box against it. The serving profiles are
 # COPIED into `engine/infra/model-serving/llama-swap.yaml`, which is what launches them; this file is

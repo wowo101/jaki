@@ -171,12 +171,17 @@ harness on jaki: [`agents.md`](agents.md).
 
 jaki serves a few people taking turns, or one agent run with some chat beside it.
 
-| model | answers at once | then |
+| model | answers at once | when it is busy |
 |---|---|---|
-| `qnext` | 2, at about 26 tokens a second each | up to 16 more wait; beyond that, `429` |
-| `qwen3.5-4b` | 1 | the rest wait; past 10 in flight, `429` |
-| `zimage` | 1, about 31 seconds an image | the next image waits for the one before |
-| speech | not measured | |
+| `qnext` | 2, at about 26 tokens a second each (one alone: about 35) | up to 16 more requests wait; further ones are turned away |
+| `qwen3.5-4b` | 1 | up to 9 more wait; further ones are turned away |
+| `zimage` | 1, about 31 seconds an image | up to 9 more wait; further ones are turned away |
+| speech models, through `speaches` | not measured | up to 10 at a time, shared by all three; further ones are turned away |
+
+**A request that is turned away gets HTTP status `429`, Too Many Requests.** Nothing was queued
+for it: the program has to wait and send it again. The router counts the requests being
+answered and the ones waiting together, and allows 18 of them for `qnext`, 10 for `qwen3.5-4b`, 10 for `zimage`,
+and 10 for the three speech models together; [`clients.md`](clients.md) lists every status a program can meet.
 
 - **Everyone shares one queue.** Requests wait first come, first served, whoever sent them. The
   chat model sees every request as coming from the router, so it cannot take turns between

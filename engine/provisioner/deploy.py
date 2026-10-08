@@ -6,7 +6,7 @@ Three strategies, selected by manifest kind:
   - app    → workstation integration for an engine/apps/ resident: bin shims
              onto PATH + systemd user units linked (the app's *code* needs no
              deploy step — consumers reach it via `uv run --project`; see
-             specs/integration-patterns.md)
+             engine/provisioner/README.md)
 """
 import json
 import shutil

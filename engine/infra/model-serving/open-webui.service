@@ -75,7 +75,7 @@ ExecStartPre=-/usr/bin/podman rm -f open-webui
 # OPENAI_API_CONFIGS marks connection 0 as a llama.cpp provider, which makes Open WebUI send each
 # earlier answer's reasoning back as `reasoning_content` (`get_reasoning_format`, 0.11.4). Without
 # it the answer goes back alone, and gufo then reuses only the first message of a chat from its
-# cache and re-reads the rest every turn (WORK/model-serving.md, 2026-09-28). It also enables the
+# cache and re-reads the rest every turn (measured 2026-09-28). It also enables the
 # admin panel's model load and unload for that connection and a llama.cpp flag on *Continue*.
 # Single-quoted so systemd passes the JSON's double quotes through.
 # Its `model_ids` replace Open WebUI's request to /v1/models with this list, so the small model,

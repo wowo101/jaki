@@ -70,7 +70,7 @@ macros:
   # says reaches the unit journal - verified 2026-09-11 by loading the delegate and finding
   # zero `llama_model_loader`, `srv ` or `stop processing` lines in the journal while the
   # request itself logged 200. `--log-file` is therefore the only route to a server's own
-  # release lines, and `engine/apps/depth-log/` reads these files by byte offset.
+  # release lines, and a reader that tails them should track its byte offset.
   # The directory is created by llama-swap.service's ExecStartPre; llama-server does not
   # create a missing parent and exits if it cannot open the file.
   logdir: "${env.HATCH_HOME}/.local/state/llama-swap-logs"
@@ -78,8 +78,8 @@ macros:
   # The pinned llama.cpp build the delegate serves on: Nathan's lineage, a host binary with its
   # own bundled RADV. ITS PATH IS NOT WRITTEN HERE. `${env.HATCH_BIN_LLAMA_SERVER}` is emitted by
   # `hatch install` from the `[[binaries]]` row in engine/models.toml, which is where the
-  # version lives, so a bump is one edit. ANY BUMP IS GATED on
-  # evaluations/models/apepojken-plain-control.sh reading 9/9 before the new build serves.
+  # version lives, so a bump is one edit. ANY BUMP IS GATED on a plain greedy control run
+  # reading 9/9 before the new build serves.
   # NOTE THE `vulkan/` in that row's path: v0.6.1 unpacked its backend directory's contents at
   # the top level and every release since keeps the directory, and llama-swap reports a
   # missing binary as `upstream command exited prematurely`, which reads like a bad flag.

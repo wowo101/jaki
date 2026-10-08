@@ -118,7 +118,7 @@ the lease is taken.
   is also the only proof that the entry serves. For a model with its own unit, it starts the
   unit and polls until the server answers `{"status":"ok"}`. It does not start a unit that is
   neither enabled nor active; if that leaves nothing running, it says so.
-- **`keep`** leaves the standing models alone.
+- **`--resident keep`** leaves the standing models alone.
 
 ### The standing models are a list, in two forms
 

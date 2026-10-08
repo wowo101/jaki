@@ -271,8 +271,8 @@ done < <(systemctl --user list-units --type=service --state=active --plain --no-
 
 # A held lease is the authoritative "something is about to load a model" signal, and it says
 # which kind: `--resident stop` means the holder took the box, so its server is coming back
-# between arms and the memory check cannot see a load that has not happened yet. `serve` and
-# `keep` are co-tenancy – a batch job holds one for hours precisely so the resident
+# between arms and the memory check cannot see a load that has not happened yet. `--resident serve`
+# and `--resident keep` are co-tenancy – a batch job holds one for hours precisely so the resident
 # stays up for it – and must not close the chat surface.
 # Asked of the lease as a question, never read out of its output: `--takes-box` prints
 # `yes`/`no` and exits 0/1, and reads only the lock and the sidecar, so it costs the chat

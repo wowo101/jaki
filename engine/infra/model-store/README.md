@@ -21,7 +21,7 @@ download-candidates --check    compare the store with the manifest and download 
 | `archived` | kept on disk and loaded by nothing, so a re-test needs no download | never |
 
 `archived` rows live in a separate file, `engine/models.archive.toml`, beside
-`engine/models.toml`. `registry-query.py` adds them when that file is present, so a machine
+`engine/models.toml`; a jaki checkout does not carry it. `registry-query.py` adds them when that file is present, so a machine
 without it is asked about nothing it never had.
 
 **To retire a file, change its row; deleting the file is not enough.** A `serving` row whose

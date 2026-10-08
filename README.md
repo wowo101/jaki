@@ -1,31 +1,21 @@
 # jaki
 
-**Status: current (2026-10-05).** A snapshot of a server that runs on one machine. Every number
-here was measured on that machine, and nobody has yet installed jaki from scratch on a second
-one.
+*jaki* (pronounced *YAH-kee*) is a local AI server.
 
-*jaki* (say *YAH-kee*) is a local AI server. It runs on one machine you own and serves text,
+It runs on affordable hardware and serves text,
 images, and speech in and out on one OpenAI-compatible address, with a chat surface for the
-browser. Every request is answered on the machine itself. Any program that talks to OpenAI's API
-can use it instead.
+browser. It's suitable for individuals or small teams. Requests are answered by an open-weights LLM with near-frontier (10/2026) capabilities and a few specialised models, on your machine. Any program that talks to OpenAI's API
+can use jaki instead.
 
-The name is Jaki Liebezeit's, the drummer of Can. He kept time so the others could go anywhere,
-and was never the front; that is the relation this server has to the person using it. It also
-expands to *just another KI*, KI being the German for AI. Lowercase, always.
+If you're new to local AI or wonder why you should be interested in it in the first place, here are a [few](https://www.youtube.com/watch?v=a-Lj9moBlqE) [good](https://www.youtube.com/watch?v=CVeZfM0pVyU) [intros](https://www.youtube.com/watch?v=SLwuR7xFXUI). Short version: LLMs and LLM-based agents are powerful technology that shouldn't be enclosed and controlled by [broligarchs](https://en.wikipedia.org/wiki/Broligarchy) - you should be able to use the technology under your conditions and not be dependent on the goodwill of a platform.
 
-## Install it
+If you wonder about the name: It's [Jaki Liebezeit's](https://en.wikipedia.org/wiki/Jaki_Liebezeit), the drummer of Can and inventor of the "motorik" beat. He kept time so the others could go anywhere, never at the front, but always helping "the musicians come to that one point where the beat is. And play like they come together and make a unit." That is the relation jaki aspires to have with the people using it. (jaki also
+expands to *just another KI*, KI being the German for AI.)
 
-Measured between 2026-09-10 and 2026-10-04 on the reference machine, an AMD Strix Halo mini-PC
-with 128 GB of unified memory:
+## Installation
 
-| | |
-|---|---|
-| chat, tokens per second | 35 at the start of a conversation, 37 with 29k tokens of context, 33 at 59k |
-| reading a long prompt | about 1,200 tokens per second at any length |
-| one 768×1024 image | about 31 seconds |
-| speech in or out, a short sentence | under 3 seconds |
-| memory | 89 GiB of the GPU's 124 for the chat model at its 131k window; 115 at the peak with every model busy at once |
-| weights on disk | 120 GiB |
+jaki runs on [**AMD Strix Halo**](https://strixhalo.wiki/) machines
+with 128 GB of unified memory, the currently most affordable platform for running models with near-frontier capabilities at usable speeds.
 
 In the directory that should hold the jaki checkout, run:
 
@@ -40,19 +30,55 @@ example `192.168.1.20`, or a Tailscale address, which starts with `100.`. No por
 jaki serves on 9090 and the chat surface on 3000. `127.0.0.1` and `localhost` are refused,
 because no other device could reach them.
 
-**How it serves.** One router, [llama-swap](https://github.com/mostlygeek/llama-swap), holds the
-address and starts each model on its first request. The chat model, Qwen3.8-Flash-Next, runs on
-[gufo](https://github.com/gufo-org/gufo), a HIP engine written for this GPU, in a
-[podman](https://github.com/podman-container-tools/podman) container pinned by digest. The small
-model, Qwen3.5-4B, runs on [a llama.cpp build tuned for Strix
+## Concurrent use
+
+jaki serves a few people taking turns, or one agent run with some chat beside it. Requests
+waiting for the chat model are answered first come, first served, whoever sent them.
+
+| model | job | answers at once | when it is busy |
+|---|---|---|---|
+| `qnext` | chat, drafting, long documents, reading images, agent runs | 2, at about 26 tokens a second each (one alone: about 35) | up to 16 more requests wait; further ones are turned away |
+| `qwen3.5-4b` | short mechanical jobs: tagging, cleaning up a transcript | 1 | up to 9 more wait; further ones are turned away |
+| `zimage` | an image from a written prompt | 1, about 31 seconds an image | up to 9 more wait; further ones are turned away |
+| speech models, through `speaches` | Whisper for transcripts of German or English audio; Kokoro for English speech, Piper for German | not measured | up to 10 at a time, shared by all three; further ones are turned away |
+
+You can read more on what this means for chat, agent runs and batch jobs, and what a program sees when it is turned
+away in the [*Sharing it* section of the guide](machines/jaki/README.md#sharing-it).
+
+## Performance
+
+All numbers are for the main model (Qwen3.8 Flash Next) and measured on my Strix Halo mini-PC with 128 GB RAM, jaki's reference machine.
+
+| | |
+|---|---|
+| Response generation | ~35 tokens per second, stable across context lengths |
+| Prompt processing | ~1,200 tokens per second at any length |
+| 768×1024 image | ~31 seconds |
+| Speech in or out (a short sentence) | under 3 seconds |
+| Memory use | 89 GiB of the GPU's 124 for the chat model and its 131k window; 115 at the peak with every model busy at once |
+| Weights on disk | 120 GiB |
+
+## Architecture
+
+One router, [llama-swap](https://github.com/mostlygeek/llama-swap), holds the
+address and starts each model on its first request.
+
+* The main model, Qwen3.8-Flash-Next, runs on
+[gufo](https://github.com/gufo-org/gufo), a HIP engine written for the Strix Halo GPU, in a
+[podman](https://github.com/podman-container-tools/podman) container pinned by digest. 
+* A complementary small
+model for delegated and batch tasks, Qwen3.5-4B, runs on [a llama.cpp build tuned for Strix
 Halo](https://github.com/Nathanw1014/strix-halo-llamacpp), and the image model, Z-Image-Turbo,
 on [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp); both are Vulkan
-binaries on the host. Speech in and out is [speaches](https://github.com/speaches-ai/speaches)
-on the CPU, and the chat surface is [Open WebUI](https://github.com/open-webui/open-webui). A
-guard refuses any GPU model load the memory cannot hold, and the small model pauses while an
+binaries on the host.
+* Speech in and out is [speaches](https://github.com/speaches-ai/speaches)
+on the CPU, and the chat surface is [Open WebUI](https://github.com/open-webui/open-webui).
+
+A
+guard refuses any GPU model load the memory cannot hold and pauses the small model when needed, e.g. while an
 image generates.
 
-## The documents
+## Further documents
 
 | document | for |
 |---|---|
@@ -62,29 +88,19 @@ image generates.
 | [`engine/infra/model-serving/README.md`](engine/infra/model-serving/README.md) | running it day to day: memory, the guard, what each setting costs |
 | [`engine/models.toml`](engine/models.toml) | every version, flag and measured number, with the evidence for each; it wins wherever a document disagrees |
 
-This repository is in the public domain under CC0 ([`LICENSE`](LICENSE)); the pieces jaki is
-built from keep their own licences. There is no support: no releases, no compatibility promise,
-and nobody is obliged to answer an issue. Send a patch as an issue. The maintainer applies it in
-the workspace jaki is exported from, and it arrives here with the next snapshot.
+## Project context
 
-**One platform at a time.** jaki supports one platform: the cheapest hardware that runs all of
-it. Every number is measured there. Today that is Strix Halo. Following each new platform costs
-about one machine a year, which this project may not be able to spend; hardware sponsorship
-would pay for it.
+jaki is exported from **hatch**, an exercise in [*keep engineering*](https://keep.engineering) and my private knowledge workspace in which I work with research
+documents, cross-linked notes, conversations and transcriptions. jaki is the server that workspace runs on, and independent from its other tools.
+This repository is a snapshot of jaki's current configuration in hatch with no history carried over.
 
-## What it is for
+## License, support and contributions
 
-A model on your own machine sees everything you give it, and nothing leaves the machine. You can
-put a whole document, a transcript or a photographed page into the context, and no provider can
-change the price, retire the model or be compelled to hand over what you sent. jaki puts that on
-one machine: the largest chat model that fits, a small model for mechanical work, an image model
-and speech, all on one address.
+This repository is in the public domain under a CC0 ([`LICENSE`](LICENSE)); the pieces jaki is
+built from keep their own licences.
 
-Two rules govern its configuration. Every pinned setting has its evidence written beside it in
-`engine/models.toml`, so a measured value can be told from a copied default; that is why the
-file is long. And every feature that costs something says what it costs, in terms a user
-notices: memory, seconds, or a refused request.
+**Important caveat:** Since I develop jaki as part of a personal project, I can't offer any official support for it: no releases, no compatibility promise,
+and nobody is obliged to answer an issue.
 
-jaki is exported from **hatch**, a private workspace in which one person works with research
-documents, notes, voice recordings and conversations. jaki is the server that workspace runs on.
-This repository holds the part you can run without the rest, as a snapshot with no history.
+If you want to **contribute** a fix or improvement, send a patch as an issue. I'll check it and, if it passes, apply it in
+the workspace jaki is exported from. You'll be sure of my gratitude, and the change arrives here with the next snapshot.

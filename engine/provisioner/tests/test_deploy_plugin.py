@@ -23,8 +23,8 @@ class TestRenderData(unittest.TestCase):
         self.assertEqual(out["vaultRootOverride"], "")
 
     def test_substitutes_repo(self):
-        out = render_data({"scriptPath": "{repo}/engine/tools/keep/keep"}, _R())
-        self.assertEqual(out["scriptPath"], "/repo/engine/tools/keep/keep")
+        out = render_data({"scriptPath": "{repo}/scripts/demo"}, _R())
+        self.assertEqual(out["scriptPath"], "/repo/scripts/demo")
 
     def test_passes_non_strings_through(self):
         out = render_data({"enabled": True, "count": 3}, _R())
