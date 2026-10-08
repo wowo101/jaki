@@ -37,7 +37,7 @@ Measured between 2026-09-10 and 2026-10-04 on the reference machine:
 |---|---|
 | chat, tokens per second | 35 at the start of a conversation, 37 with 29k tokens of context, 33 at 59k |
 | reading a long prompt | about 1,200 tokens per second at any length |
-| one 768×1024 image | about 31 seconds |
+| one 768×1024 image | about 30 seconds |
 | speech in or out, a short sentence | under 3 seconds |
 | memory | 89 GiB of the GPU's 124 for the chat model at its 131k window; 115 at the peak with every model busy at once |
 | weights on disk | 120 GiB |
@@ -181,7 +181,7 @@ jaki serves a few people taking turns, or one agent run with some chat beside it
 |---|---|---|
 | `qnext` | 2, at about 26 tokens a second each (one alone: about 35) | up to 16 more requests wait; further ones are turned away |
 | `qwen3.5-4b` | 1 | up to 9 more wait; further ones are turned away |
-| `zimage` | 1, about 31 seconds an image | up to 9 more wait; further ones are turned away |
+| `zimage` | 1, about 30 seconds an image | up to 9 more wait; further ones are turned away |
 | speech models, through `speaches` | not measured | up to 10 at a time, shared by all three; further ones are turned away |
 
 **A request that is turned away gets HTTP status `429`, Too Many Requests.** Nothing was queued

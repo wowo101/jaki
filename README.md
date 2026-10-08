@@ -44,7 +44,7 @@ waiting for the chat model are answered first come, first served, whoever sent t
 |---|---|---|---|
 | `qnext` | chat, drafting, long documents, reading images, agent runs | 2, at about 26 tokens a second each (one alone: about 35) | up to 16 more requests wait; further ones are turned away |
 | `qwen3.5-4b` | short mechanical jobs: tagging, cleaning up a transcript | 1 | up to 9 more wait; further ones are turned away |
-| `zimage` | an image from a written prompt | 1, about 31 seconds an image | up to 9 more wait; further ones are turned away |
+| `zimage` | an image from a written prompt | 1, about 30 seconds an image | up to 9 more wait; further ones are turned away |
 | speech models, through `speaches` | Whisper for transcripts of German or English audio; Kokoro for English speech, Piper for German | not measured | up to 10 at a time, shared by all three; further ones are turned away |
 
 You can read more on what this means for chat, agent runs and batch jobs, and what a program sees when it is turned
@@ -58,7 +58,7 @@ All numbers are for the main model (Qwen3.8 Flash Next) plus specialised models 
 |---|---|
 | Response generation | ~35 tokens per second, stable across context lengths |
 | Prompt processing | ~1,200 tokens per second at any length |
-| 768×1024 image | ~31 seconds |
+| 768×1024 image | ~30 seconds |
 | Speech in or out (a short sentence) | under 3 seconds |
 | Memory use | 89 GiB of the GPU's 124 for the chat model and its 131k window; 115 at the peak with every model busy at once |
 | Weights on disk | 120 GiB |
