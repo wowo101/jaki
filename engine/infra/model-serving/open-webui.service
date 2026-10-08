@@ -36,9 +36,6 @@
 # persistence is off. So this file is the only durable place to change anything, and a setting
 # someone fixes in the browser will quietly revert. Edit here, then restart.
 #
-# Left in the database and now ignored: the rows seeded before this change, including two
-# audio base URLs pointing at api.openai.com. They do no harm and they are not the truth.
-#
 # AUDIO GOES TO THE SAME ADDRESS AS EVERYTHING ELSE, :9090, and the model names are the real
 # upstream ids because llama-swap aliases them onto its `speech` entry without rewriting.
 # English out is Kokoro (2026-09-10); German out is

@@ -13,7 +13,10 @@ needs    = []
 # speaches-models.sh is on PATH because it is a hand gesture, not a unit: the speech
 # container runs HF_HUB_OFFLINE, so this is the only way its weights arrive, and it is run
 # once at install and again whenever the declared set changes.
-bin = ["hatch-serving-guard", "hatch-image-front", "hatch-pressure-watch", "owui-bringup.sh", "pull-image-resumable.sh", "speaches-models.sh", "serving-binaries.sh"]
+# `jaki`, the wrapper at the repository root, is declared here so that after `./jaki install`
+# it is `jaki` on PATH; this component is what a jaki machine installs.
+bin = ["hatch-serving-guard", "hatch-image-front", "hatch-pressure-watch", "owui-bringup.sh", "pull-image-resumable.sh", "speaches-models.sh", "serving-binaries.sh",
+       { source = "../../../jaki", name = "jaki" }]
 
 # Enabled by naming them in the box's `[units].enabled`; a service is enabled
 # without being started, so it comes up at the next boot rather than mid-install.

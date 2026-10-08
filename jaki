@@ -17,6 +17,8 @@
 # address and nothing else, so loopback is dead on the machine itself. smoke and client-config
 # default to this machine's address; run anywhere else, they need it given.
 #
+# After the install, `jaki` is on PATH (~/.local/bin) and runs from any directory.
+#
 # Every step prints the command it runs before running it, so this file doubles as the manual
 # path. It calls two subcommands of the repository's installer, `hatch install` and
 # `hatch doctor`, and the three fetchers the installer puts on PATH, and client-config reads
@@ -35,12 +37,16 @@ OWUI_IMAGE=$(grep -o -m1 'ghcr\.io/open-webui/open-webui:[^[:space:]]*' "$ROOT/e
 [ -n "$OWUI_IMAGE" ] || { echo "jaki: no open-webui image named in engine/infra/model-serving/open-webui.service" >&2; exit 1; }
 ORIGINAL_PATH=$PATH
 export PATH="$HOME/.local/bin:$PATH"
+# How a hint names this script: `jaki` once the caller's own PATH finds this file, and
+# `./jaki`, run from the checkout, until then.
+ME=./jaki
+[ "$(PATH=$ORIGINAL_PATH command -v jaki 2>/dev/null | xargs -r readlink -f)" = "$ROOT/jaki" ] && ME=jaki
 
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 run()  { printf '  → %s\n' "$*"; "$@"; }
 die()  { printf 'jaki: %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
 # normalise_address <arg> -> http://host:port/v1 on stdout, or fail. Accepts a hostname or IPv4
 # with or without :port, an IPv6 address in brackets ([fe80::1] or [fe80::1]:9090), and an
@@ -82,6 +88,11 @@ need_prereqs() {
     || die "python3 is $(python3 -V 2>&1); 3.11 or newer is needed"
   # The resident's engine (gufo, ROCm) runs in a container handed /dev/kfd and /dev/dri.
   [ -e /dev/kfd ] || die "no /dev/kfd: the resident's engine needs the amdgpu driver's compute device (a Strix Halo GPU)"
+  # Rootless podman maps a container's users onto this user's subordinate ids; without a range,
+  # pulling an image whose files belong to more than one user fails partway through the install.
+  local me; me="^($USER_NAME|$(id -u)):"
+  grep -qE "$me" /etc/subuid 2>/dev/null && grep -qE "$me" /etc/subgid 2>/dev/null \
+    || die "no subordinate ids for $USER_NAME in /etc/subuid and /etc/subgid, which rootless podman needs. Add a range: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER_NAME"
 }
 
 ensure_linger() {
@@ -151,7 +162,7 @@ cmd_install() {
   say "Deploying the services and the router config"
   run "$ROOT/hatch" install || die "hatch install failed; fix what it printed and run again"
   if ! printf '%s' "$ORIGINAL_PATH" | tr ':' '\n' | sed 's#/$##' | grep -qx -e "$HOME/.local/bin" -e '~/.local/bin'; then
-    printf '\n  NOTE: put ~/.local/bin on your PATH; the installed commands live there.\n'
+    printf '\n  NOTE: put ~/.local/bin on your PATH; the installed commands, jaki among them, live there.\n'
   fi
 
   say "Fetching the engines, the router and the image server (~90 MB, and a ~2.9 GB container image for the resident; digests checked)"
@@ -164,7 +175,7 @@ cmd_install() {
   if podman image exists "$OWUI_IMAGE"; then
     printf '  already present\n'
   else
-    run podman pull "$OWUI_IMAGE" || die "podman pull failed. On a link where it keeps dying, run owui-bringup and watch /tmp/owui-bringup.log"
+    run podman pull "$OWUI_IMAGE" || die "podman pull failed. On a link where it keeps dying, run pull-image-resumable $OWUI_IMAGE until it prints DONE (it resumes each time), then this install again"
   fi
 
   say "Starting the weights download (~120 GiB, resumes across restarts and reboots)"
@@ -174,7 +185,10 @@ cmd_install() {
   cat <<EOF
   watch the weights arrive:   tail -f $LOG
   when it says the store matches, check everything and start the server:
-                              ./jaki check && ./jaki start
+                              $ME check && $ME start
+EOF
+  [ "$ME" = jaki ] || printf '                              (from %s; with ~/.local/bin on your PATH, jaki runs from anywhere)\n' "$ROOT"
+  cat <<EOF
   then open the chat surface and create the first account, which becomes the admin:
                               $(webui_url)
 EOF
@@ -206,7 +220,7 @@ cmd_check() {
 cmd_start() {
   if ! download-candidates --check >/dev/null 2>&1; then
     if [ "${1:-}" != "--anyway" ]; then
-      die "the weights are not all there yet (download-candidates --check). Watch $LOG, or start anyway with: ./jaki start --anyway"
+      die "the weights are not all there yet (download-candidates --check). Watch $LOG, or start anyway with: $ME start --anyway"
     fi
   fi
   say "Starting the router and the chat surface"
@@ -246,7 +260,7 @@ cmd_status() {
 target_url() {
   if [ $# -ge 1 ] && [ -n "$1" ]; then normalise_address "$1"; return; fi
   local u; u=$(serve_url)
-  [ -n "$u" ] || die "this machine has no jaki installed; give the address, as in: ./jaki $USAGE_HINT"
+  [ -n "$u" ] || die "this machine has no jaki installed; give the address, as in: $ME $USAGE_HINT"
   normalise_address "$u"
 }
 
@@ -310,7 +324,7 @@ PY
 # A client's settings, built from the registry so no copy of a model id can outlive the model.
 cmd_client_config() {
   local kind="${1:-}"; shift || true
-  case "$kind" in openai|pi) ;; *) die "which client? ./jaki client-config openai|pi [address]" ;; esac
+  case "$kind" in openai|pi) ;; *) die "which client? $ME client-config openai|pi [address]" ;; esac
   local url; url=$(target_url "${1:-}") || exit 1
   python3 - "$kind" "$url" "$ROOT/engine/models.toml" <<'PY'
 import json, sys, tomllib

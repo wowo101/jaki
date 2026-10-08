@@ -199,8 +199,7 @@ environment and reads none from its database (`backend/open_webui/models/config.
 what lets the install finish without a visit to seven settings pages in the browser. The cost is
 that a change made in Admin Settings applies at once and is gone at the next restart, because it
 is written only to memory. The unit is the only place a change lasts: edit it, then run
-`systemctl --user restart open-webui`. Rows written to the database before the setting existed,
-among them two audio URLs pointing at `api.openai.com`, are still there and ignored.
+`systemctl --user restart open-webui`.
 
 The unit sets three things a fresh Open WebUI gets wrong:
 

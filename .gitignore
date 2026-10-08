@@ -1,5 +1,6 @@
-# jaki – per-machine state that never belongs in a clone
+# jaki – per-machine state that never belongs in a clone, including the config `jaki install` writes
 engine/.hatch/
 __pycache__/
 *.pyc
 .env
+machines/*.toml

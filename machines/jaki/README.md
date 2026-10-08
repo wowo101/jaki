@@ -1,6 +1,6 @@
 # jaki
 
-**Status: current (2026-10-05).** Everything on this page is deployed and exercised on one
+**Status: current (2026-10-08).** Everything on this page is deployed and exercised on one
 machine; the chat model moved to the gufo engine on 2026-09-28. Nobody has yet reproduced the
 install from scratch on a second one.
 
@@ -62,9 +62,13 @@ Measured between 2026-09-10 and 2026-10-04 on the reference machine:
 - **Packages:** `git`, `python` 3.11 or newer, `curl`, `tar`, `unzip`, `podman`. On Arch-based
   systems `sudo pacman -S git python curl tar unzip podman`; on Fedora `sudo dnf install git
   python3 curl tar unzip podman`.
+- **Subordinate user ids for rootless podman:** your user needs a line in `/etc/subuid` and in
+  `/etc/subgid`. Most distributions add one when the user is created; if not, `sudo usermod
+  --add-subuids 100000-165535 --add-subgids 100000-165535 $USER`. The install checks.
 - **Services that outlive your login:** `loginctl enable-linger $USER`. jaki runs as user
   services and comes up at boot only with this set.
-- **130 GB of free disk** for the weights, plus about 13 GB for container images.
+- **150 GB of free disk:** 129 GB (120 GiB) for the weights and about 13 GB for container
+  images, with some room to spare.
 - **An address the machine keeps and your other devices can reach.** Not `127.0.0.1`. A
   Tailscale address is the simplest and is what the reference machine uses: jaki binds it and is
   then reachable from every device on your tailnet and from nothing else. A fixed LAN address
@@ -91,7 +95,7 @@ it doubles as the manual install. It:
 1. writes `machines/<your-hostname>.toml`, which names the address and the two components this
    machine runs, and enables lingering for your user;
 2. runs `./hatch install`, the repository's installer. It links four services and one config
-   file into the checkout and puts its commands in `~/.local/bin`;
+   file from the checkout into place and puts its commands in `~/.local/bin`;
 3. fetches the small model's engine, the router and the image server against pinned digests
    (about 90 MB), and the chat model's engine as a container image pinned by digest (about 2.9
    GB); then the speech server's image and its three models (about 3 GB), then the chat
@@ -99,17 +103,19 @@ it doubles as the manual install. It:
 4. starts the weights download as a service, 120 GiB, which resumes across restarts and reboots
    and runs again at every boot.
 
-Put `~/.local/bin` on your `PATH` if it is not already; the script says so if it is not.
+Put `~/.local/bin` on your `PATH` if it is not already; the script says so if it is not. `jaki`
+itself is among the commands it puts there, so from here on it runs from any directory.
 
 Watch the weights arrive with `tail -f ~/.local/share/box-model-eval/download.log`. On a link
-where `podman pull` keeps dying, `owui-bringup` fetches the chat surface's image blob by blob
-and resumes; it logs to `/tmp/owui-bringup.log` and prints nothing to the terminal.
+where `podman pull` keeps dying, `pull-image-resumable <image>` fetches the chat surface's image
+blob by blob and resumes where it stopped; run it until it prints `DONE`, then `./jaki install`
+again. The install prints the image name when the pull fails.
 
 When the log says the store matches:
 
 ```bash
-./jaki check     # every weight, binary, speech model and deployed file, by name
-./jaki start     # the router and the chat surface
+jaki check     # every weight, binary, speech model and deployed file, by name
+jaki start     # the router and the chat surface
 ```
 
 `start` refuses while weights are missing, so a half-fetched store never serves. The chat
@@ -120,16 +126,16 @@ approve them. An approved user sees no model until an admin grants access to it:
 Settings, under Models, open `qnext` and make it public or give it to a group. That setting is
 kept in the chat surface's database and survives restarts.
 
-That is the whole install. There is nothing to configure in the browser. `./jaki status` shows
-the services, what is loaded, and where the download is; `./jaki stop` stops the server.
+That is the whole install. There is nothing to configure in the browser. `jaki status` shows
+the services, what is loaded, and where the download is; `jaki stop` stops the server.
 
 ## Check it
 
-`./jaki check` runs four checks: every weight file at its exact size, the three binaries and the
+`jaki check` runs four checks: every weight file at its exact size, the three binaries and the
 chat model's engine image against their pinned digests, the three speech models in the cache,
 and every deployed command, service and config file by name.
 
-Then exercise each modality. `./jaki smoke` sends one request to each – chat, the small model,
+Then exercise each modality. `jaki smoke` sends one request to each – chat, the small model,
 an image, speech out and back in – and checks the content of each answer. By hand, with `$JAKI`
 standing for `http://<your address>:9090`:
 
@@ -224,7 +230,7 @@ file and run `systemctl --user restart open-webui`.
 |---|---|---|
 | a different model, or different flags | `engine/models.toml`, then `engine/infra/model-serving/llama-swap.yaml` | `systemctl --user restart llama-swap` |
 | the German voice in the browser | `AUDIO_TTS_MODEL` to `speaches-ai/piper-de_DE-thorsten-medium` and `AUDIO_TTS_VOICE` to `de_DE-thorsten-medium` in `engine/infra/model-serving/open-webui.service` | `systemctl --user restart open-webui` |
-| the machine's address | `serve_url` in your machine's toml | `./hatch install`, then `./jaki stop` and `./jaki start` |
+| the machine's address | `serve_url` in your machine's toml | `./hatch install`, then `jaki stop` and `jaki start` |
 | a newer small-model engine, router or image server | the row in `[[binaries]]` in `engine/models.toml` | `serving-binaries`, then `./hatch install` (the router config reads the binary's path from what install writes), then `systemctl --user restart llama-swap` |
 | a newer chat-model engine | `digest` and `version` of the row in `[[images]]` in `engine/models.toml` | `serving-binaries`, then `./hatch install` (the router config names the image by the digest install writes), then `systemctl --user restart llama-swap` |
 | another speech model | `[models.speech].model_ids` in `engine/models.toml` and the `aliases:` list of the `speech` entry in `llama-swap.yaml` | `speaches-models`, then restart `llama-swap` |
@@ -240,13 +246,14 @@ every edit.
 | `llama-swap` fails to start, log says `Failed to load environment files` | `hatch install` has not run, so `~/.config/hatch/env` does not exist |
 | `llama-swap` fails to start with status 78 | the address is empty; set `serve_url` and re-run `./hatch install` |
 | `llama-swap` will not bind | `serve_url` names an address this machine does not hold |
-| `./jaki check` says `[STALE]` for a binary | the binary there was not unpacked from the pinned archive; run it without `--check` |
+| `jaki check` says `[STALE]` for a binary | the binary there was not unpacked from the pinned archive; run `serving-binaries` |
 | a request answers `404 no router for requested model` | the id is not an entry or an alias in `llama-swap.yaml` |
-| a model start fails with `upstream command exited prematurely` | a binary, the engine image or a weight file is missing at the path the config names; run both `--check`s |
+| a model start fails with `upstream command exited prematurely` | a binary, the engine image or a weight file is missing at the path the config names; run `serving-binaries --check` and `download-candidates --check` |
 | the chat model never becomes ready | read its own log (below): `/dev/kfd` missing or not writable, or too little memory for its 89 GiB |
-| the microphone or read-aloud button fails | `./jaki check`, then `curl $JAKI/running` for the `speech` entry |
+| the microphone or read-aloud button fails | `jaki check`, then `curl $JAKI/running` for the `speech` entry |
 | the chat surface's port is closed for the first 20 minutes | first-start database build; this is normal |
 | nothing runs after a reboot | `loginctl enable-linger $USER` was not set |
+| `speaches-models` exits with a permission error on its cache | the `speaches-hf-cache` volume is not owned by the container's user; `podman unshare chown -R 1000:1000 "$(podman volume inspect speaches-hf-cache --format '{{.Mountpoint}}')"`, then run it again |
 
 Logs: `journalctl --user -u llama-swap`, `journalctl --user -u open-webui`, the chat model's
 engine `journalctl --user CONTAINER_NAME=hatch-qnext`, the memory watcher `journalctl --user -u

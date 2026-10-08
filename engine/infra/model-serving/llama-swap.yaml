@@ -101,7 +101,7 @@ models:
   #   ${env.HATCH_IMG_GUFO_RUNTIME}  the image by digest (`ref@sha256:…`), which `hatch install`
   #               emits from the [[images]] row. Never a tag: the upstream rebuilds its tags.
   #   HATCH_SWAP_ID  the guard sizes a container from `resident_gib` in the registry block with
-  #               this swap_id (84); its weight paths are container paths it cannot stat.
+  #               this swap_id; its weight paths are container paths it cannot stat.
   #   hatch-qnext in HATCH_CHAT_CONTAINERS (gpu-binaries.env)  the server sits in the container's
   #               cgroup, and without the name the guard reads it as a foreign GPU owner and
   #               refuses every other load (exit 97), and the lease headlines it as NO LEASE.
@@ -292,9 +292,9 @@ groups:
   # deliberately unused, because it fires a GET / at each named model and speaches serves no `/`
   # with the UI off – it would log an error on every router start for a load that worked.
   #
-  # MEASURED, and the state matters more than the number. The standing pair sits at 89.3 GiB
-  # GTT (gufo 84.0 + the 4B); one 1024x1024 image peaks at 106, and everything loaded and busy
-  # at once peaked at 110.1 with 6.9 GiB available (maxload, 2026-09-27). The 4B pauses for
+  # MEASURED, and the state matters more than the number. The chat model alone sits at 89.2 GiB
+  # GTT with the 131k window; one 1024x1024 image peaks at 106, and everything loaded and busy
+  # at once peaked at 114.6 with 1.1 GiB available (maxload, 2026-10-05). The 4B pauses for
   # each image, the front refuses an image the box has no room for, and the pressure watcher
   # unloads an idle zimage below 8 GiB (engine/infra/model-serving/README.md, *The admission
   # guard*). The full table and its caveats: engine/models.toml [models.zimage].note, which is

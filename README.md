@@ -4,7 +4,7 @@
 
 It runs on affordable hardware and serves text,
 images, and speech in and out on one OpenAI-compatible address, with a chat surface for the
-browser. It's suitable for individuals or small teams. Requests are answered by an open-weights LLM with near-frontier (10/2026) capabilities and a few specialised models, on your machine. Any program that talks to OpenAI's API
+browser. It's suitable for individuals or small teams. Requests are answered by an open-weights LLM with near-frontier capabilities (as of 10/2026) and a few specialised models, on a machine you own. Any program that talks to OpenAI's API
 can use jaki instead.
 
 If you're new to local AI or wonder why you should be interested in it in the first place, here are a [few](https://www.youtube.com/watch?v=a-Lj9moBlqE) [good](https://www.youtube.com/watch?v=CVeZfM0pVyU) [intros](https://www.youtube.com/watch?v=SLwuR7xFXUI). Short version: LLMs and LLM-based agents are powerful technology that shouldn't be enclosed and controlled by [broligarchs](https://en.wikipedia.org/wiki/Broligarchy) - you should be able to use the technology under your conditions and not be dependent on the goodwill of a platform.
@@ -14,21 +14,26 @@ expands to *just another KI*, KI being the German for AI.)
 
 ## Installation
 
-jaki runs on [**AMD Strix Halo**](https://strixhalo.wiki/) machines
+jaki runs on Linux on [**AMD Strix Halo**](https://strixhalo.wiki/) machines
 with 128 GB of unified memory, the currently most affordable platform for running models with near-frontier capabilities at usable speeds.
 
-In the directory that should hold the jaki checkout, run:
+To install jaki, in the directory that should hold its checkout, run:
 
 ```bash
 git clone https://github.com/wowo101/jaki.git
 cd jaki
-./jaki install <your address>     # then ./jaki check and ./jaki start
+./jaki install <your address>
 ```
 
 `<your address>` is how your other devices reach this machine: an IP address or a hostname, for
-example `192.168.1.20`, or a Tailscale address, which starts with `100.`. No port is needed;
+example `192.168.1.20`, or a Tailscale address, which starts with `100.`. No port needs to be declared;
 jaki serves on 9090 and the chat surface on 3000. `127.0.0.1` and `localhost` are refused,
 because no other device could reach them.
+
+The install ends by downloading 120 GiB of weights, which can take hours. Once they are in,
+`jaki check` and `jaki start` finish the job. The install puts `jaki` in `~/.local/bin`; until
+that is on your PATH, run it as `./jaki` from the checkout. The
+[guide](machines/jaki/README.md) walks through every step.
 
 ## Concurrent use
 
@@ -47,7 +52,7 @@ away in the [*Sharing it* section of the guide](machines/jaki/README.md#sharing-
 
 ## Performance
 
-All numbers are for the main model (Qwen3.8 Flash Next) and measured on my Strix Halo mini-PC with 128 GB RAM, jaki's reference machine.
+All numbers are for the main model (Qwen3.8 Flash Next) plus specialised models where needed for a task, and measured on my Strix Halo mini-PC with 128 GB RAM, jaki's reference machine.
 
 | | |
 |---|---|
@@ -68,15 +73,16 @@ address and starts each model on its first request.
 [podman](https://github.com/podman-container-tools/podman) container pinned by digest. 
 * A complementary small
 model for delegated and batch tasks, [Qwen3.5-4B](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF), runs on [a llama.cpp build tuned for Strix
-Halo](https://github.com/Nathanw1014/strix-halo-llamacpp), and the image model, Z-Image-Turbo,
+Halo](https://github.com/Nathanw1014/strix-halo-llamacpp), and the image model, [Z-Image-Turbo](https://huggingface.co/leejet/Z-Image-Turbo-GGUF),
 on [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp); both are Vulkan
 binaries on the host.
 * Speech in and out is [speaches](https://github.com/speaches-ai/speaches)
 on the CPU, and the chat surface is [Open WebUI](https://github.com/open-webui/open-webui).
 
-A
-guard refuses any GPU model load the memory cannot hold and pauses the small model when needed, e.g. while an
+A guard refuses any GPU model load the memory cannot hold and pauses the small model when needed, e.g. while an
 image generates.
+
+All components used in jaki are Open Source so you have full transparency about what's happening "behind the scenes" and with your data.
 
 ## Further documents
 
@@ -96,7 +102,7 @@ This repository is a snapshot of jaki's current configuration in hatch with no h
 
 ## License, support and contributions
 
-This repository is in the public domain under a CC0 ([`LICENSE`](LICENSE)); the pieces jaki is
+This repository is in the public domain under a [CC0 license](LICENSE); the pieces jaki is
 built from keep their own licences.
 
 **Important caveat:** Since I develop jaki as part of a personal project, I can't offer any official support for it: no releases, no compatibility promise,
