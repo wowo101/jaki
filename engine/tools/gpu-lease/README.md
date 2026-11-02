@@ -169,7 +169,7 @@ llama-swap for maintenance does not make every release wait for a reload.
 entry survives another group's exclusive load, and its own `ttl` still applies. `ttl: 0` keeps a
 standing model loaded; `HATCH_ROUTER_RESIDENTS` tells the lease and the guard about it.
 
-**A GPU holder is any `llama-server`, `sd-server` or `gufo` process.** The holder scan matches
+**A GPU holder is any `llama-server`, `sd-server`, `gufo` or `.gufo-wrapped` process.** The holder scan matches
 these names, and a binary it does not name is invisible: missing from refusals, from `status`
 and from the sweep. A new GPU binary, or a router entry with its own container, goes in
 `HATCH_GPU_SERVERS` or `HATCH_CHAT_CONTAINERS` in `engine/lib/gpu-binaries.env`. Test 20 points
@@ -223,7 +223,8 @@ no lease can be held anyway.
   belongs to the job: a lease that reloaded nothing still exits with the job's status, and its
   complaint would end with its transient unit. `status` puts it first, `status --json` carries
   it as `restore_failed`, and `restore` retries the recorded models and removes the file.
-  Nothing else removes it.
+  Nothing else removes it. Why the reload was refused is in the serving guard's journal,
+  `journalctl --user -t hatch-serving-guard` (`engine/infra/model-serving/README.md`).
 - `gpu.lease` – the label: `who`, `why`, `mode`, `resident`, `ttl`, `pid`, `unit`, `since`,
   `baseline`; `stopped`, the standing models this lease took down, written before it takes them,
   so a killed holder's `restore` reloads the right set; and `restoring=1` while it reloads them.

@@ -3,14 +3,14 @@
 Idempotent from a provisioner-prior state. Writes engine/.hatch/resolved.env,
 self-deploys the `hatch` shim onto PATH, then deploys each declared verb
 (symlink-on-PATH), app (bin shims + systemd user units) and plugin (build +
-symlink-into-vault). Units named in the machine's `[units].enabled` are enabled
+symlink-into-vault), then fetches any declared community Obsidian plugin the
+vault lacks (`obsidian.py`). Units named in the machine's `[units].enabled` are enabled
 as they are linked. Returns DeployResults for the CLI to report.
 
 Regular files at deploy targets (e.g. pre-provisioner cp'd units) are refused
 by default; `--adopt` replaces them. Real *directories* (hand-installed plugin
 copies) are always refused — they may hold user data.
 """
-import subprocess
 from pathlib import Path
 
 from . import platform
@@ -18,10 +18,11 @@ from .config import machine_config_path, load_machine_config
 from .resolve import resolve
 from .emit import link_env_for_units, resolved_env_path, write_resolved_env
 from .manifest import load_manifest
-from .deploy import (deploy_verb, deploy_app, build_plugin, link_plugin,
+from .obsidian import community_vault, enable_plugin, install_community_plugin, restart_note
+from .deploy import (deploy_verb, deploy_app, deploy_plugin,
                      DeployResult, _blocked_by_real_file, _symlink_replacing,
                      _REFUSE_HINT)
-from .layout import (BIN_DIR, artefact_dir, artefact_key, app_bin_names,
+from .layout import (BIN_DIR, artefact_dir, artefact_key, app_bin_names, plugin_link,
                      claim_path_names, slot_accepts, vault_targets)
 
 
@@ -106,15 +107,28 @@ def install(root: Path, hostname: str, adopt: bool = False) -> list:
         if m is None:
             results.append(art)
             continue
-        if not vaults:
-            results.append(DeployResult(plugin, "error", "no vault endpoint configured"))
-            continue
-        try:
-            build_plugin(m, r, art)          # build + data.json once, then link into each vault
-        except subprocess.CalledProcessError as e:
-            results.append(DeployResult(plugin, "error", f"build failed: {e}"))
-            continue
-        for vault in vaults:
-            results.append(link_plugin(m, art, vault))
+        deployed = deploy_plugin(m, r, art, vaults)
+        results.extend(deployed)
+        # Linked is not loaded: Obsidian runs only the ids in community-plugins.json. Enabled in
+        # the canonical vault only; in an extra vault that stays the vault owner's choice.
+        canonical = Path(r.env["VAULT"]) if r.env.get("VAULT") else None
+        linked = canonical and any(d.status == "deployed" and d.detail == str(plugin_link(canonical, m))
+                                   for d in deployed)
+        if linked:
+            try:
+                if enable_plugin(canonical, m.plugin_id):
+                    results.append(DeployResult(f"{plugin}:enable", "deployed",
+                                                f"enabled in {canonical}; {restart_note()}"))
+            except (OSError, ValueError) as e:
+                results.append(DeployResult(f"{plugin}:enable", "error", str(e)))
+
+    # Community plugins go into the canonical vault only: they are what a hatch component
+    # there depends on, and an extra vault declares nothing that needs them.
+    vault, problem = community_vault(cfg, r)
+    if problem:
+        results.append(DeployResult("obsidian", "error", problem))
+    elif vault:
+        for spec in cfg.obsidian["community_plugins"]:
+            results.append(install_community_plugin(spec, vault))
 
     return results

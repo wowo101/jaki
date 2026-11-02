@@ -149,7 +149,8 @@ def record_restore(ok: bool, owed: list[str], who: str = "", why: str = "") -> b
             RESTORE_FAILED.unlink(missing_ok=True)
         return True
     log(f"!! THE BOX HAS NO RESIDENT: {ids or 'the recorded set'} did not come back. "
-        f"Recorded in {RESTORE_FAILED}; `hatch gpu-lease restore` retries it.")
+        f"Recorded in {RESTORE_FAILED}; `hatch gpu-lease restore` retries it, and "
+        f"`journalctl --user -t hatch-serving-guard` says why it was refused.")
     # write_private and oneline for the same reasons the sidecar uses them: `status` polls
     # this file, and a `--why` carrying a newline would inject an empty `owed=` that
     # read_kv's first-key-wins then hands to the retry as "nothing recorded".

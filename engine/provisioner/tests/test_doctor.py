@@ -245,6 +245,15 @@ class TestVerbChecks(unittest.TestCase):
         self.assertNotIn("inert", c.detail)
 
 
+    def test_files_on_a_verb_are_not_inert(self):
+        """`deploy_verb` links `[[files]]` too (2026-10-17), so declaring one on a
+        verb is a deployment, not a dead field."""
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / "share" / "entry"
+            r, _ = self._repo(d, manifest=_VERB + f'[[files]]\nsource = "kp"\ndest = "{dest}"\n')
+            c = r.check("kp")
+        self.assertNotIn("inert", c.detail)
+
 class TestNeedsChecks(unittest.TestCase):
     def _repo(self, d, needs, endpoints='vault = "%s"\n'):
         r = _Repo(d)
@@ -362,8 +371,22 @@ class TestAppAndPluginChecks(unittest.TestCase):
                              'kind = "plugin"\nid = "pg"\noutputs = ["main.js"]\n',
                              files=["main.js"])
             r.link(r.vault / ".obsidian" / "plugins" / "pg", art)
+            (r.vault / ".obsidian" / "community-plugins.json").write_text('["pg"]')
             c = r.check("pg")
         self.assertTrue(c.ok, c.detail)
+
+    def test_plugin_linked_but_not_enabled_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = _Repo(d)
+            r.machine('plugins = ["pg"]\n')
+            art = r.artefact("pg", "plugin",
+                             'kind = "plugin"\nid = "pg"\noutputs = ["main.js"]\n',
+                             files=["main.js"])
+            r.link(r.vault / ".obsidian" / "plugins" / "pg", art)
+            (r.vault / ".obsidian" / "community-plugins.json").write_text('["other"]')
+            c = r.check("pg")
+        self.assertFalse(c.ok)
+        self.assertIn("not enabled", c.detail)
 
 
 class TestDrift(unittest.TestCase):
@@ -826,7 +849,8 @@ class TestSweepStaleness(unittest.TestCase):
     enablement check alone cannot see a sweep that has stopped working.
     """
 
-    def _run(self, d, cadence="OnUnitActiveSec=15min\n", age_seconds=None):
+    def _run(self, d, cadence="OnUnitActiveSec=15min\n", age_seconds=None,
+             mark=None):
         r = _Repo(d)
         r.shim()
         art = r.artefact("sweeper", "app",
@@ -841,7 +865,7 @@ class TestSweepStaleness(unittest.TestCase):
             hb = state / "s" / "heartbeat"
             hb.parent.mkdir(parents=True)
             stamp = datetime.now().astimezone() - timedelta(seconds=age_seconds)
-            hb.write_text(stamp.isoformat() + "\n")
+            hb.write_text(stamp.isoformat() + "\n" + (mark + "\n" if mark else ""))
         with mock.patch.object(doctor.shutil, "which",
                                side_effect=lambda n: "/usr/bin/systemctl" if n == "systemctl" else "/usr/bin/" + n), \
              mock.patch.object(doctor, "unit_is_enabled", return_value=True), \
@@ -861,6 +885,34 @@ class TestSweepStaleness(unittest.TestCase):
             c = self._run(d, age_seconds=60)
         self.assertTrue(c.ok, c.detail)
         self.assertNotIn("last completed run", c.detail)
+
+    def _mark(self, awake_ago, boot=None):
+        return (f"awake {boot or doctor.boot_id()} "
+                f"{doctor.awake_seconds() - awake_ago:.0f}")
+
+    def test_hours_asleep_since_the_last_run_are_not_missed_fires(self):
+        """Six hours by the wall clock, one minute of it awake: the timer has
+        had no chance to fire, whatever the uptime since boot."""
+        # Up for a day and a half, so the cap at awake time since boot cannot
+        # pass it on its own.
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(doctor, "awake_seconds", return_value=33 * 3600):
+            c = self._run(d, age_seconds=6 * 3600, mark=self._mark(60))
+        self.assertTrue(c.ok, c.detail)
+
+    def test_awake_hours_without_a_run_still_fail(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = self._run(d, age_seconds=6 * 3600, mark=self._mark(2 * 3600))
+        self.assertFalse(c.ok)
+        self.assertIn("last completed run 2.0h ago", c.detail)
+
+    def test_a_mark_from_an_earlier_boot_falls_back_to_the_wall_clock(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(doctor, "awake_seconds", return_value=10 * 3600):
+            c = self._run(d, age_seconds=6 * 3600,
+                          mark=self._mark(60, boot="not-this-boot"))
+        self.assertFalse(c.ok)
+        self.assertIn("last completed run 6.0h ago", c.detail)
 
     def test_absent_heartbeat_is_a_note_not_a_failure(self):
         """A sweep that has not run yet is not a broken one — and an absent
@@ -1011,3 +1063,79 @@ class TestProbeProblems(unittest.TestCase):
         """Not just collected - it must turn the artefact's tick into a cross."""
         m, d = self._manifest(["python3", "-c", "raise SystemExit(3)"], hint="fix me")
         self.assertTrue(doctor._probe_problems(m, d))
+
+
+class TestModelIdsCheck(unittest.TestCase):
+    """doctor runs models-check's repo-local half, including this machine's .env."""
+
+    def _root(self, d, env=None):
+        from engine.provisioner.doctor import repo_root
+        real, root = repo_root(), Path(d)
+        for name in ("engine", "machines", ".env.example"):
+            (root / name).symlink_to(real / name)
+        if env is not None:
+            (root / ".env").write_text(env)
+        return root
+
+    def test_a_retired_model_in_the_local_env_fails(self):
+        from engine.provisioner.doctor import model_ids_check, repo_root
+        if not (repo_root() / "engine" / "models-check.py").exists():
+            self.skipTest("engine/models-check.py is not in this tree (the jaki export leaves it out)")
+        with tempfile.TemporaryDirectory() as d:
+            c = model_ids_check(self._root(d, "OLLAMA_TAGGING_MODEL=Qwen3.6-35B-A3B-UD-Q6_K_XL\n"))
+        self.assertFalse(c.ok)
+        self.assertIn("OLLAMA_TAGGING_MODEL", c.detail)
+
+    def test_no_local_override_passes(self):
+        from engine.provisioner.doctor import model_ids_check
+        with tempfile.TemporaryDirectory() as d:
+            c = model_ids_check(self._root(d))
+        self.assertTrue(c.ok, c.detail)
+
+
+class TestRenderedFileEntries(unittest.TestCase):
+    """`render = true`: doctor checks the link against the rendered file, and the
+    rendered file against a fresh render of the template."""
+
+    def _setup(self, r):
+        dest = r.home / "nmh" / "hatch_keep.json"
+        r.machine('verbs = ["keep"]\n')
+        r.shim()
+        art = r.artefact("keep", "verb",
+                         'kind = "verb"\nexec = "keep"\n[[files]]\n'
+                         f'source = "host.json.in"\ndest = "{dest}"\nrender = true\n',
+                         files=["keep"])
+        (art / "host.json.in").write_text('{"path": "{repo}/host"}\n')
+        r.link(r.bin / "keep", art / "keep")
+        return art, dest
+
+    def _install(self, r, art):
+        from engine.provisioner.deploy import deploy_files
+        deploy_files(load_manifest(art), art, env={"HATCH_REPO": str(r.root)})
+
+    def test_a_current_render_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = _Repo(d)
+            art, dest = self._setup(r)
+            self._install(r, art)
+            c = r.check("keep")
+        self.assertTrue(c.ok, c.detail)
+
+    def test_a_template_changed_since_install_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = _Repo(d)
+            art, dest = self._setup(r)
+            self._install(r, art)
+            (art / "host.json.in").write_text('{"path": "{repo}/host2"}\n')
+            c = r.check("keep")
+        self.assertFalse(c.ok)
+        self.assertIn("rendered from an older host.json.in", c.detail)
+
+    def test_a_dest_linked_to_the_template_itself_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = _Repo(d)
+            art, dest = self._setup(r)
+            r.link(dest, art / "host.json.in")
+            c = r.check("keep")
+        self.assertFalse(c.ok)
+        self.assertIn("points at", c.detail)

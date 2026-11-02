@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .layout import (SYSTEMD_USER_DIR, app_bin_target, file_target, plugin_link,
-                     unit_is_enablable, unit_target, verb_target)
+                     rendered_source, unit_is_enablable, unit_target, verb_target)
 from .manifest import missing_requires
 
 
@@ -46,21 +46,26 @@ def _blocked_by_real_file(target: Path, adopt: bool) -> bool:
 _REFUSE_HINT = "exists and is not a symlink — refusing to overwrite (rm it or `hatch install --adopt`)"
 
 
-def _enable_unit(name: str) -> str:
-    """Enable one unit, starting it only if it is a timer. Returns a detail string.
+_TRIGGERS = (".timer", ".socket")
 
-    `enable --now` on a timer is idempotent and costs nothing; on a service it
-    starts a daemon, which is why services are enabled without it.
+
+def _enable_unit(name: str) -> str:
+    """Enable one unit, starting it only if it is a trigger. Returns a detail string.
+
+    `enable --now` on a timer or a socket is idempotent and starts nothing but
+    the trigger; on a service it starts a daemon, which is why services are
+    enabled without it.
     """
+    trigger = name.endswith(_TRIGGERS)
     argv = ["systemctl", "--user", "enable"]
-    if name.endswith(".timer"):
+    if trigger:
         argv.append("--now")
     argv.append(name)
     r = subprocess.run(argv, capture_output=True, text=True)
     if r.returncode != 0:
         # Print what it saw: a bare "enable failed" costs a second session.
         return f"enable FAILED rc={r.returncode}: {(r.stderr or r.stdout).strip()}"
-    return "enabled" + (" and started" if name.endswith(".timer") else " (starts at next boot)")
+    return "enabled" + (" and started" if trigger else " (starts at next boot)")
 
 
 def deploy_units(m, artefact_dir: Path, systemd_dir: Path = None,
@@ -76,9 +81,9 @@ def deploy_units(m, artefact_dir: Path, systemd_dir: Path = None,
     A unit named in the machine's `[units].enabled` is enabled here; the rest
     are linked only, and reported as a hint. Enablement is per-machine because
     the same app lands on several and a different timer fires on each. Timers
-    are also started (`--now`), services are not: starting a daemon can seize a
-    GPU or a port, and an install is not where that should happen. A service
-    named in `[units].enabled` therefore comes up at the next boot.
+    and sockets are also started (`--now`), services are not: starting a daemon
+    can seize a GPU or a port, and an install is not where that should happen. A
+    service named in `[units].enabled` therefore comes up at the next boot.
     """
     if not m.units:
         return []
@@ -130,11 +135,11 @@ def deploy_units(m, artefact_dir: Path, systemd_dir: Path = None,
 def deploy_verb(m, resolved, artefact_dir: Path, bin_dir: Path, adopt: bool = False,
                 systemd_dir: Path = None, reload_units: bool = True,
                 systemctl_available: bool = None, enable: set = None) -> list:
-    """Symlink the verb onto PATH, then link any units it declares.
+    """Symlink the verb onto PATH, then link any units and `[[files]]` it declares.
 
     Returns a list, like `deploy_app`: a verb may carry units (one that runs on
-    a timer needs them), and a manifest whose declaration nothing acts on is
-    worse than one that is refused.
+    a timer needs them) or files (one with a file-manager entry needs one), and
+    a manifest whose declaration nothing acts on is worse than one that is refused.
     """
     missing = missing_requires(m)
     if missing:
@@ -148,6 +153,7 @@ def deploy_verb(m, resolved, artefact_dir: Path, bin_dir: Path, adopt: bool = Fa
     results = [DeployResult(m.name, "deployed", f"{target} -> {source}")]
     results.extend(deploy_units(m, artefact_dir, systemd_dir, reload_units,
                                 systemctl_available, adopt, enable))
+    results.extend(deploy_files(m, artefact_dir, adopt=adopt, env=getattr(resolved, "env", None)))
     return results
 
 
@@ -194,11 +200,11 @@ def deploy_app(m, resolved, artefact_dir: Path, bin_dir: Path,
     # whose units were skipped.
     results.extend(deploy_units(m, artefact_dir, systemd_dir, reload_units,
                                 systemctl_available, adopt, enable))
-    results.extend(deploy_files(m, artefact_dir, adopt=adopt))
+    results.extend(deploy_files(m, artefact_dir, adopt=adopt, env=getattr(resolved, "env", None)))
     return results
 
 
-def deploy_files(m, artefact_dir: Path, adopt: bool = False) -> list:
+def deploy_files(m, artefact_dir: Path, adopt: bool = False, env: dict = None) -> list:
     """Symlink each `[[files]]` entry to its declared destination.
 
     The fourth strategy, for a file whose destination no other strategy can
@@ -207,6 +213,9 @@ def deploy_files(m, artefact_dir: Path, adopt: bool = False) -> list:
     exactly as it is for shims and units, because it may be the hand-placed copy
     this strategy is replacing and clobbering it would destroy the evidence of
     what was running.
+
+    A `render = true` entry is filled in from `env` (the resolved config) first,
+    and the destination links to the rendered file instead of the template.
     """
     results = []
     seen = set()
@@ -224,27 +233,51 @@ def deploy_files(m, artefact_dir: Path, adopt: bool = False) -> list:
         if _blocked_by_real_file(target, adopt):
             results.append(DeployResult(label, "error", f"{target} {_REFUSE_HINT}"))
             continue
+        if entry.render:
+            if not (env or {}).get("HATCH_REPO"):
+                results.append(DeployResult(label, "error",
+                                            "render = true needs the resolved config (HATCH_REPO)"))
+                continue
+            text = render_text(source.read_text(), env)
+            if target.suffix == ".json":
+                # A path with a quote or backslash in it would otherwise yield a file the
+                # consumer rejects with a message that names nothing here.
+                try:
+                    json.loads(text)
+                except json.JSONDecodeError as e:
+                    results.append(DeployResult(label, "error", f"rendered {entry.source} is not valid JSON: {e}"))
+                    continue
+            rendered = rendered_source(Path(env["HATCH_REPO"]), m.name, entry)
+            rendered.parent.mkdir(parents=True, exist_ok=True)
+            rendered.write_text(text)
+            shutil.copymode(source, rendered)   # a rendered script must stay runnable
+            source = rendered
         target.parent.mkdir(parents=True, exist_ok=True)
         _symlink_replacing(target, source)
         results.append(DeployResult(label, "deployed", f"{target} -> {source}"))
     return results
 
 
-def render_data(data: dict, resolved) -> dict:
-    """Substitute {git_bin}/{path_prepend}/{vault} tokens in a data.json template."""
+def render_text(text: str, env: dict) -> str:
+    """Substitute the {git_bin}/{path_prepend}/{vault}/{repo} tokens from resolved config.
+
+    Only these four exact tokens are replaced, so the braces of a JSON template
+    pass through untouched."""
     mapping = {
-        "git_bin": resolved.env["GIT_BIN"],
-        "path_prepend": resolved.env["PATH_PREPEND"],
-        "vault": resolved.env["VAULT"],
-        "repo": resolved.env.get("HATCH_REPO", ""),
+        "git_bin": env.get("GIT_BIN", ""),
+        "path_prepend": env.get("PATH_PREPEND", ""),
+        "vault": env.get("VAULT", ""),
+        "repo": env.get("HATCH_REPO", ""),
     }
-    out = {}
-    for k, v in data.items():
-        if isinstance(v, str):
-            for token, val in mapping.items():
-                v = v.replace("{" + token + "}", val)
-        out[k] = v
-    return out
+    for token, val in mapping.items():
+        text = text.replace("{" + token + "}", val)
+    return text
+
+
+def render_data(data: dict, resolved) -> dict:
+    """Substitute the same tokens in each string value of a data.json template."""
+    return {k: render_text(v, resolved.env) if isinstance(v, str) else v
+            for k, v in data.items()}
 
 
 def build_plugin(m, resolved, artefact_dir: Path) -> None:
@@ -260,6 +293,25 @@ def build_plugin(m, resolved, artefact_dir: Path) -> None:
         subprocess.run(cmd, cwd=artefact_dir, check=True)
     if m.data:
         (artefact_dir / "data.json").write_text(json.dumps(render_data(m.data, resolved), indent=2))
+
+
+def deploy_plugin(m, resolved, artefact_dir: Path, vaults: list) -> list:
+    """Gate, build once, then link into each vault.
+
+    The gate comes first for the reason it exists: a missing build tool raises
+    FileNotFoundError out of `subprocess.run`, which nothing above catches, so an
+    ungated plugin on a machine without pnpm killed `install` partway through.
+    """
+    missing = missing_requires(m)
+    if missing:
+        return [DeployResult(m.name, "skipped", f"requires {', '.join(missing)}")]
+    if not vaults:
+        return [DeployResult(m.name, "error", "no vault endpoint configured")]
+    try:
+        build_plugin(m, resolved, artefact_dir)
+    except subprocess.CalledProcessError as e:
+        return [DeployResult(m.name, "error", f"build failed: {e}")]
+    return [link_plugin(m, artefact_dir, vault) for vault in vaults]
 
 
 def link_plugin(m, artefact_dir: Path, vault: Path) -> DeployResult:

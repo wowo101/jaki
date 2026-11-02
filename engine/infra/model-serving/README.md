@@ -17,7 +17,7 @@ Every model, flag, sampling value and the evidence for each are in
 ## What is running
 
 `llama-swap` on `:9090` is the only process on the machine that serves a model, and every client
-asks it: the chat surface, agent harnesses, batch jobs. It holds four entries in one group.
+asks it: the chat surface, agent harnesses, batch jobs. It holds the entries below in one group.
 Loading one never unloads another, so entries accumulate as they are asked for and stay loaded.
 
 | entry | answers | size | in `/v1/models` | unloads |
@@ -26,6 +26,7 @@ Loading one never unloads another, so entries accumulate as they are asked for a
 | `qwen3.5-4b` | the small model: short mechanical jobs such as tagging or transcript cleanup | 3 GB | no | never, once loaded |
 | `zimage` | the image model: Z-Image-Turbo through `sd-server` | 11 GB | no | after 15 idle minutes |
 | `speech` | transcription and speech synthesis: speaches on the CPU | 2 GB | no | never, once started |
+
 
 The lease and the guard call the two standing GPU models *residents*; that is the word in their
 flags and in `engine/lib/gpu-binaries.env`.
@@ -126,7 +127,8 @@ hatch gpu-lease launch --who <name> --why <tag> --resident stop -- <command>
 `--resident stop` asks the router to unload its models through `POST /api/models/unload`, and
 loads them again on release. There is no unit to stop by hand, since every model is a child
 process of the router. Reloading can take up to 300 s per standing model, so 600 s for both when
-the chat model's weights are not in the page cache; a warm reload took 23 to 25 s.
+the chat model's weights are not in the page cache; a warm reload took 23 to 25 s. If a reload
+fails, *When a load fails, the reason is in the journal* below says where to look.
 
 `--resident stop` also stops the speech server. It comes back on the next speech request instead
 of on release, because it is not in `HATCH_ROUTER_RESIDENTS`; that list names what holds the
@@ -333,8 +335,10 @@ stop` lease counts the small model as loaded, so its release reloads it. `test-i
 exercises the whole path against stand-in servers.
 
 **An image that does not fit is refused with a reason.** After the pause, the front needs
-`MemAvailable` to cover what one image adds – 17 GiB while sd-server still has to load its
-weights, 11.5 GiB once it has – plus a 4 GiB floor. It waits up to 60 s for that, then answers
+`MemAvailable` to cover what one image adds – by default 17 GiB while sd-server still has to
+load its weights and 11.5 GiB once it has, which an entry can override in its `env` – plus a 4 GiB
+floor. **One image generates at a time on the box**, across every image entry: each front takes
+a file lock beside the marker for the whole pause-admit-generate span. It waits up to 60 s for that, then answers
 `503` with the memory available, and reloads the small model. This happens only when every model
 is busy at once, which no unload can help; the caller gets a message instead of a crash that
 would take the chat model with it. `test-image-front.py` covers it.
@@ -359,7 +363,7 @@ microphone every time the GPU was busy, for a refusal it never needed.
 **Exit 97 means something else owns the GPU.** Four things cause it: a `llama-server` that is
 neither in a known container nor started by the router; an active unit whose command, or a
 script it runs, invokes a binary named in `HATCH_GPU_SERVERS` or `HATCH_GPU_TOOLS`
-(`llama-server`, `sd-server`, `gufo`, `llama-bench`, `llama-cli`, `sd-cli`); a `gpu-lease` held
+(`llama-server`, `sd-server`, `gufo`, `.gufo-wrapped`, `llama-bench`, `llama-cli`, `sd-cli`); a `gpu-lease` held
 with `--resident stop`; and an unreadable `engine/lib/gpu-binaries.env`. Without that file the
 guard cannot tell an idle GPU from one holding 99 GiB, so it refuses. The refusal prints the
 pid, the container, the port and the total GPU memory in use. It prints GPU memory because a
@@ -390,6 +394,21 @@ it is released, and the guard refuses while such a lease holds the GPU, so the l
 refuse its own reload. For that window it sets `restoring=1` in its label file, and `status
 --takes-box` answers `no` while it is set. The memory check still applies to anything else that
 arrives in that window.
+
+### When a load fails, the reason is in the journal
+
+**`journalctl --user -t hatch-serving-guard` on the GPU machine** holds every refusal with its
+reason and exit code, one line each. Read it first. The router keeps the guard's own output, so
+a refused load reaches the caller and the router's log only as `upstream command exited
+prematurely`, an HTTP 500 with nothing more. The exit codes are 96 (a model held back for longer
+than one image), 97 (another owner holds the GPU, or the guard cannot read
+`engine/lib/gpu-binaries.env`) and 98 (the load will not fit).
+
+The same applies when `hatch gpu-lease status` opens with `THE BOX HAS NO RESIDENT`: a
+`--resident stop` lease could not reload the chat model. `hatch gpu-lease restore` retries it;
+the journal says why the lease's own attempts were refused. To see what the guard decides at a
+given moment, run it by hand with a command that does nothing, on the GPU machine:
+`env HATCH_SWAP_ID=qnext hatch-serving-guard /bin/echo passed`.
 
 ## Optional: TLS and a hostname
 

@@ -9,6 +9,10 @@ runs. Opaque to substrate identity: endpoints are just endpoints.
 the laptop and the box, and which timer fires differs between them
 (`note-collect` here, `note-transcribe` there). It belongs beside the artefact
 list rather than in a `provision.toml`, which is machine-agnostic.
+
+`[obsidian].community_plugins` names the third-party Obsidian plugins this
+machine's hatch components depend on, each with the GitHub repo and release a
+fresh install fetches (`obsidian.py`).
 """
 import tomllib
 from dataclasses import dataclass, field
@@ -27,10 +31,39 @@ class MachineConfig:
     # Defaulted: a machine toml with no [units] runs nothing unattended, which is
     # the right answer for a fresh one and keeps every existing caller valid.
     units: dict = field(default_factory=dict)   # {"enabled": [...]}
+    obsidian: dict = field(default_factory=dict)  # {"community_plugins": [{id, repo, version}]}
 
     def enabled_units(self) -> set:
         """Unit basenames `install` enables and `doctor` requires to be enabled."""
         return set(self.units.get("enabled", []))
+
+
+_PLUGIN_KEYS = ("id", "repo", "version")
+
+
+def _check_obsidian(d) -> dict:
+    """Refuse a community-plugin entry install could not act on, at load time.
+
+    A missing key would otherwise surface as a 404 from GitHub naming a URL with
+    `None` in it, or as a plugin doctor can never find.
+    """
+    if not isinstance(d, dict):
+        raise ValueError(f"[obsidian] must be a table, got {d!r}")
+    entries = d.get("community_plugins", [])
+    if not isinstance(entries, list):
+        raise ValueError("[obsidian].community_plugins must be a list of tables")
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(f"[obsidian].community_plugins entries are tables, got {entry!r}")
+        bad = [k for k in _PLUGIN_KEYS if not isinstance(entry.get(k), str) or not entry[k]]
+        if bad:
+            raise ValueError(f"[obsidian].community_plugins entry {entry!r} needs a non-empty "
+                             f"string for {', '.join(bad)}")
+        if entry["id"] in seen:
+            raise ValueError(f"[obsidian].community_plugins lists {entry['id']!r} twice")
+        seen.add(entry["id"])
+    return d
 
 
 def normalise_hostname(raw: str) -> str:
@@ -56,4 +89,5 @@ def load_machine_config(path: Path) -> MachineConfig:
         endpoints=d.get("endpoints", {}),
         artefacts=d.get("artefacts", {}),
         units=d.get("units", {}),
+        obsidian=_check_obsidian(d.get("obsidian", {})),
     )

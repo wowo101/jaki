@@ -31,12 +31,12 @@ expands to *just another KI*, KI being the German for AI. Lowercase, always.
 
 The chat surface lists only `qnext`. A program reaches the other five by naming them.
 
-Measured between 2026-09-10 and 2026-10-04 on the reference machine:
+Measured between 2026-09-10 and 2026-11-02 on the reference machine (chat 2026-11-02):
 
 | | |
 |---|---|
-| chat, tokens per second | 35 at the start of a conversation, 37 with 29k tokens of context, 33 at 59k |
-| reading a long prompt | about 1,200 tokens per second at any length |
+| chat, tokens per second | about 50, at every context length measured, to 118k tokens |
+| reading a long prompt | about 1,450 tokens per second at any length |
 | one 768×1024 image | about 30 seconds |
 | speech in or out, a short sentence | under 3 seconds |
 | memory | 89 GiB of the GPU's 124 for the chat model at its 131k window; 115 at the peak with every model busy at once |
@@ -56,7 +56,7 @@ Measured between 2026-09-10 and 2026-10-04 on the reference machine:
   and PCI passthrough to virtual machines. If you need either, drop that one parameter; prompt
   processing runs a few percent slower without it.
 - **Nothing to install for ROCm.** The chat model's engine, gufo, runs in a container that
-  carries ROCm 7.2.3; the machine only needs the amdgpu driver's `/dev/kfd` and `/dev/dri`,
+  carries ROCm 10.1; the machine only needs the amdgpu driver's `/dev/kfd` and `/dev/dri`,
   which a current kernel provides. The other GPU pieces are Vulkan builds with their own drivers
   bundled.
 - **Packages:** `git`, `python` 3.11 or newer, `curl`, `tar`, `unzip`, `podman`. On Arch-based
@@ -179,7 +179,7 @@ jaki serves a few people taking turns, or one agent run with some chat beside it
 
 | model | answers at once | when it is busy |
 |---|---|---|
-| `qnext` | 2, at about 26 tokens a second each (one alone: about 35) | up to 16 more requests wait; further ones are turned away |
+| `qnext` | 2, at about 37 tokens a second each (one alone: about 50) | up to 16 more requests wait; further ones are turned away |
 | `qwen3.5-4b` | 1 | up to 9 more wait; further ones are turned away |
 | `zimage` | 1, about 30 seconds an image | up to 9 more wait; further ones are turned away |
 | speech models, through `speaches` | not measured | up to 10 at a time, shared by all three; further ones are turned away |
@@ -194,7 +194,7 @@ and 10 for the three speech models together; [`clients.md`](clients.md) lists ev
   people.
 - **Chat.** Each answer in the chat surface is one request to the chat model. A conversation's
   title and tags come from the small model, and follow-up suggestions are off. Two people whose answers generate at the
-  same moment get about 26 tokens a second each; a third person's answer starts when one of
+  same moment get about 37 tokens a second each; a third person's answer starts when one of
   them finishes.
 - **Agent runs.** A run with sub-agents fills both places (see [`agents.md`](agents.md)). Chat
   then waits behind the run's requests: in one measured run, short requests waited 40 to 230
@@ -265,7 +265,7 @@ small model and the image server log to `~/.local/state/llama-swap-logs/`.
 | piece | what it is | upstream |
 |---|---|---|
 | the router | one address in front of every model; starts each on its first request | [llama-swap](https://github.com/mostlygeek/llama-swap) v246 |
-| the chat model's engine | gufo, a HIP engine written for this GPU, in a podman container | [gufo-org/gufo](https://github.com/gufo-org/gufo) 0.7.0 |
+| the chat model's engine | gufo, a HIP engine written for this GPU, in a podman container | [gufo-org/gufo](https://github.com/gufo-org/gufo) 0.28.1 |
 | the small model's engine | llama.cpp, in a build tuned for this GPU | [Nathanw1014/strix-halo-llamacpp](https://github.com/Nathanw1014/strix-halo-llamacpp) v0.7.6.1 |
 | the image server | stable-diffusion.cpp, Vulkan build | [leejet/stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) |
 | the speech server | faster-whisper in, Kokoro and Piper out, on the CPU | [speaches](https://github.com/speaches-ai/speaches) 0.8.3 |

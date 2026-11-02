@@ -95,9 +95,10 @@ children the same system prompt and put what differs in the task.
 
 ## Concurrency and delegation
 
-- **Run at most two agents at once.** Two answer at about 26 tokens a second each, and the
-  engine reads one prompt at a time. In a measured run, four children sharing a system prompt
-  finished 12 % sooner in parallel than one after another.
+- **Run at most two agents at once.** Two answer at about 37 tokens a second each, and the
+  engine reads one prompt at a time. In a measured run, two children sharing a system prompt
+  finished 9 % sooner in parallel than one after another, and four finished in about the same
+  time either way.
 - **Send mechanical work to the small model by name.** Nothing picks a model for you. A sub-task
-  that needs no reasoning names `qwen3.5-4b`, which reads and writes about one and a half times
-  as fast as `qnext`.
+  that needs no reasoning names `qwen3.5-4b`, which reads about a quarter faster than `qnext`,
+  writes at about the same speed, and leaves `qnext`'s two places free.

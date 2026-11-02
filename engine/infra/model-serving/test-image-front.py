@@ -119,7 +119,10 @@ class H(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get('Content-Length') or 0))
         pathlib.Path({str(seen)!r}).write_text(json.dumps(
             {{'marker': pathlib.Path({str(marker)!r}).exists(), 'bytes': len(body), 'path': self.path}}))
+        start = time.time()
         time.sleep(1)
+        with open({str(pathlib.Path(tmp, 'gens'))!r}, 'a') as f:
+            f.write(f"{{start}} {{time.time()}} {{pathlib.Path({str(marker)!r}).exists()}}\\n")
         b = json.dumps({{'data': [{{'b64_json': 'x'}}]}}).encode()
         self.send_response(200); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
 http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
@@ -232,6 +235,32 @@ http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
     check("and the delegate is reloaded after it",
           wait_for(lambda: any(c[0] == "load" for c in calls), 8), calls)
     front3.terminate(); front3.wait(timeout=30)
+
+    # Two image entries, two fronts, one box: their generations must not overlap, and each must
+    # still find the marker when it finishes. FRONT may name another copy, to prove the check fails.
+    front_bin = os.environ.get("HATCH_TEST_FRONT") or str(HERE / "hatch-image-front")
+    settle()
+    gens = pathlib.Path(tmp, "gens"); gens.unlink(missing_ok=True)
+    ports = [free_port(), free_port()]
+    pair = [subprocess.Popen([sys.executable, front_bin, "--port", str(p), "--", sys.executable, str(fake_sd)],
+                             env=env, stderr=open(pathlib.Path(tmp, f"front-{p}.err"), "w")) for p in ports]
+    for p in ports:
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{p}/", timeout=1).read(); break
+            except Exception:                         # noqa: BLE001 - still starting
+                time.sleep(0.2)
+    threads = [threading.Thread(target=lambda p=p: post("/v1/images/generations", port=p, timeout=30)) for p in ports]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    rows = sorted(tuple(line.split()) for line in gens.read_text().splitlines()) if gens.exists() else []
+    check("two fronts generate one at a time",
+          len(rows) == 2 and float(rows[1][0]) >= float(rows[0][1]) - 0.05, rows)
+    check("and each still finds the marker when it finishes", len(rows) == 2 and all(r[2] == "True" for r in rows), rows)
+    for f in pair: f.terminate(); f.wait(timeout=30)
+    if len(rows) != 2:
+        for err in pathlib.Path(tmp).glob("front-*.err"):
+            print(err.read_text())
 
     # ── the guard ──────────────────────────────────────────────────────────────────────
     genv = dict(os.environ, HATCH_IMAGE_MARKER=str(marker), HATCH_GPU_BINARIES=BINARIES)

@@ -51,7 +51,7 @@ answer without the reasoning. Sending earlier turns back with or without their
 `reasoning_content` makes no difference to speed: either way the whole conversation is read from
 cache.
 
-**`qnext` answers two requests at once**, at about 26 tokens a second each. Up to 16 more wait in one queue, first come, first served, whoever sent them: the engine sees
+**`qnext` answers two requests at once**, at about 37 tokens a second each. Up to 16 more wait in one queue, first come, first served, whoever sent them: the engine sees
 every request as coming from the router. Beyond that, `qnext` answers `429`, and so does the router past 18 requests in flight to
 `qnext` or 10 to any other model. How this plays out for chat, agent runs and batch
 jobs: *Sharing it* in the [guide](README.md).

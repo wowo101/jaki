@@ -9,7 +9,7 @@ can use jaki instead.
 
 If you're new to local AI or wonder why you should be interested in it in the first place, here are a [few](https://www.youtube.com/watch?v=a-Lj9moBlqE) [good](https://www.youtube.com/watch?v=CVeZfM0pVyU) [intros](https://www.youtube.com/watch?v=SLwuR7xFXUI). Short version: LLMs and LLM-based agents are powerful technology that shouldn't be enclosed and controlled by [broligarchs](https://en.wikipedia.org/wiki/Broligarchy) - you should be able to use the technology under your conditions and not be dependent on the goodwill of a platform.
 
-If you wonder about the name: It's [Jaki Liebezeit's](https://en.wikipedia.org/wiki/Jaki_Liebezeit), the drummer of Can and inventor of the "motorik" beat. He kept time so the others could go anywhere, never at the front, but always helping "the musicians come to that one point where the beat is. And play like they come together and make a unit." That is the relation jaki aspires to have with the people using it. (jaki also
+If you wonder about the name: It's [Jaki Liebezeit's](https://en.wikipedia.org/wiki/Jaki_Liebezeit), the drummer of Can and inventor of the "motorik" beat. He kept time so the others could go anywhere, never at the front, but always helping "the musicians come to that one point where the beat is, come together and make a unit" (his words). That is the relation jaki aspires to have with the people using it. (jaki also
 expands to *just another KI*, KI being the German for AI.)
 
 ## Installation
@@ -42,7 +42,7 @@ waiting for the chat model are answered first come, first served, whoever sent t
 
 | model | job | answers at once | when it is busy |
 |---|---|---|---|
-| `qnext` | chat, drafting, long documents, reading images, agent runs | 2, at about 26 tokens a second each (one alone: about 35) | up to 16 more requests wait; further ones are turned away |
+| `qnext` | chat, drafting, long documents, reading images, agent runs | 2, at about 37 tokens a second each (one alone: about 50) | up to 16 more requests wait; further ones are turned away |
 | `qwen3.5-4b` | short mechanical jobs: tagging, cleaning up a transcript | 1 | up to 9 more wait; further ones are turned away |
 | `zimage` | an image from a written prompt | 1, about 30 seconds an image | up to 9 more wait; further ones are turned away |
 | speech models, through `speaches` | Whisper for transcripts of German or English audio; Kokoro for English speech, Piper for German | not measured | up to 10 at a time, shared by all three; further ones are turned away |
@@ -56,8 +56,8 @@ All numbers are for the main model (Qwen3.8 Flash Next) plus specialised models 
 
 | | |
 |---|---|
-| Response generation | ~35 tokens per second, stable across context lengths |
-| Prompt processing | ~1,200 tokens per second at any length |
+| Response generation | ~50 tokens per second, stable across context lengths |
+| Prompt processing | ~1,450 tokens per second at any length |
 | 768×1024 image | ~30 seconds |
 | Speech in or out (a short sentence) | under 3 seconds |
 | Memory use | 89 GiB of the GPU's 124 for the chat model and its 131k window; 115 at the peak with every model busy at once |
@@ -77,7 +77,8 @@ Halo](https://github.com/Nathanw1014/strix-halo-llamacpp), and the image model, 
 on [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp); both are Vulkan
 binaries on the host.
 * Speech in and out is [speaches](https://github.com/speaches-ai/speaches)
-on the CPU, and the chat surface is [Open WebUI](https://github.com/open-webui/open-webui).
+on the CPU.
+* The chat surface is [Open WebUI](https://github.com/open-webui/open-webui).
 
 A guard refuses any GPU model load the memory cannot hold and pauses the small model when needed, e.g. while an
 image generates.

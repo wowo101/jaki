@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from engine.provisioner.manifest import ArtefactManifest
+from engine.provisioner.manifest import ArtefactManifest, FileEntry
 from engine.provisioner.deploy import deploy_verb
 
 
@@ -96,6 +96,23 @@ class TestDeployVerb(unittest.TestCase):
                 self.assertEqual(by_name[f"sync:{unit}"].status, "deployed", results)
                 self.assertTrue((sd / unit).is_symlink(), f"{unit} not linked")
                 self.assertEqual((sd / unit).resolve(), (art / unit).resolve())
+
+    def test_links_files_a_verb_declares(self):
+        """A verb with a file-manager entry declares it as `[[files]]`, and it is
+        linked to its destination. `deploy_verb` ignored `m.files` until
+        2026-10-17, which left `keep`'s Nautilus script declared and absent."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            art = root / "keep"; art.mkdir()
+            (art / "keep").write_text("#!/bin/sh\ntrue\n")
+            (art / "entry").write_text("#!/bin/sh\nexec keep\n")
+            dest = root / "share" / "scripts" / "Keep in Paperless…"
+            m = ArtefactManifest("keep", "verb", exec_name="keep", requires=[],
+                                 files=[FileEntry("entry", dest)])
+            results = deploy_verb(m, _R(), art, root / "bin")
+            self.assertEqual([r.status for r in results], ["deployed", "deployed"], results)
+            self.assertTrue(dest.is_symlink())
+            self.assertEqual(dest.resolve(), (art / "entry").resolve())
 
     def test_units_skip_without_systemctl(self):
         """A macOS machine skips the units and still gets the verb on PATH."""

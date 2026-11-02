@@ -81,6 +81,15 @@ def file_target(entry) -> Path:
     return entry.dest
 
 
+def rendered_source(root: Path, artefact: str, entry) -> Path:
+    """Where a `render = true` entry's filled-in template is written, and what its
+    destination links to. Under `engine/.hatch/`, which holds what `install` derives
+    for this machine. Named after the template, minus a `.in` suffix: one template
+    linked to two destinations renders once, and two templates never share a file."""
+    name = entry.source.removesuffix(".in").replace("/", "__")
+    return root / "engine" / ".hatch" / "rendered" / artefact / name
+
+
 def file_dirs(m) -> list:
     """The destination directories a manifest's `[[files]]` entries write into.
 

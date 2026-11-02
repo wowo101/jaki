@@ -396,7 +396,8 @@ def cmd_status(argv: list[str]) -> int:
         out(f"!! THE BOX HAS NO RESIDENT: {failed.get('owed') or 'the recorded set'} did not come "
             f"back after {failed.get('who') or 'a lease'} ({failed.get('why') or '?'}) released, "
             f"{L.human_age(failed.get('when'))} ago.")
-        out("   run 'hatch gpu-lease restore' to retry the load.")
+        out("   run 'hatch gpu-lease restore' to retry the load; why it was refused: "
+            "journalctl --user -t hatch-serving-guard")
     out(f"machine:  {machine} — MemAvailable {avail_gib()} GiB, GTT {gtt_gib()} GiB")
     parts = [f"{r.unit} {systemctl('is-active', r.unit).stdout.strip()} (:{r.port})" for r in RESIDENTS]
     rstate = "unknown (the router did not answer)" if loaded is None else "unloaded"

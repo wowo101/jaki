@@ -1,6 +1,6 @@
 # `hatch` – the machine provisioner
 
-**Status: current (2026-10-05).**
+**Status: current (2026-10-19).**
 
 `hatch` sets up a machine: it works out what this host is from its `machines/<hostname>.toml`,
 deploys the commands, apps, services and plugins that file lists, and writes the resolved config
@@ -37,7 +37,7 @@ if `hatch` should own the path.
 |---|---|
 | `hatch doctor` | reports the machine's health and one line per declared artefact; changes nothing |
 | `hatch init` | writes `machines/<hostname>.toml` from the template |
-| `hatch install` | deploys the `hatch` command and the commands, apps, services and plugins this machine lists; writes `engine/.hatch/resolved.env` and each plugin's `data.json`. Safe to repeat; `--adopt` replaces leftover regular files |
+| `hatch install` | deploys the `hatch` command and the commands, apps, services and plugins this machine lists, and fetches any declared community Obsidian plugin the vault lacks; writes `engine/.hatch/resolved.env` and each plugin's `data.json`. Safe to repeat; `--adopt` replaces leftover regular files |
 | `hatch status` | shows this machine's resolved config |
 
 ## What `doctor` reports
@@ -50,7 +50,9 @@ things.
 checks because no machine lists it; whether DEVONthink is available; and whether
 `engine/.hatch/resolved.env` exists and still matches what the machine's toml resolves to. A
 toml edited without a re-install is reported as stale, because every deployed piece keeps
-reading the old file until `install` runs again.
+reading the old file until `install` runs again. The `model ids` line runs the half of
+`engine/models-check.py` that needs no box: every model id and endpoint a client asks for, in the
+committed defaults and in this machine's gitignored `.env` files, must be one the router serves.
 
 **The artefacts.** For each entry under `verbs`, `apps`, `infra` and `plugins` in the machine's
 toml, `doctor` loads its `provision.toml`. The list an entry is in says where it lives; the
@@ -71,8 +73,19 @@ manifest's `kind` says how it deploys. They agree except for `infra`, whose comp
   manifest; a key missing from the file needs a re-install; an empty value needs the machine's
   toml edited. The empty case matters most, because `resolve()` writes an empty string for every
   endpoint the toml leaves out, so the file looks complete while the feature is off.
+- **Enabled.** A plugin must be listed in the canonical vault's
+  `.obsidian/community-plugins.json`, which `install` writes. Obsidian loads nothing else, so
+  a linked plugin can otherwise sit switched off.
 - **Unused fields.** A manifest field the artefact's kind never reads, such as `units` on a
   `verb`, which deploys nothing and raises no error.
+
+**Community Obsidian plugins.** A machine toml can list, under
+`[obsidian].community_plugins`, the third-party plugins a hatch component depends on, each with
+its GitHub repo and version. `install` fetches a missing one from that release into the
+canonical vault and enables it; a plugin already there is left alone. `doctor` prints one line
+per plugin in an `obsidian` section, and fails on one that is missing or not enabled. Obsidian's
+restricted mode turns every community plugin off without changing a file, so `doctor` cannot
+see it.
 
 A **drift** section then lists symlinks into this repository that no declared artefact claims,
 in `~/.local/bin`, `~/.config/systemd/user` and every directory a `[[files]]` entry writes into.
@@ -85,7 +98,8 @@ cannot be attributed; since everything `hatch` places is a symlink, a regular fi
 path is reported against the artefact that claims it. Links into other repositories, such as a
 dotfiles checkout, are ignored on purpose.
 
-Exit 0 when everything passes or is a declared missing binary; exit 1 otherwise.
+Exit 0 when everything passes or is a declared missing binary; exit 1 otherwise. On the laptop, `doctor-watch` (`engine/apps/doctor-watch/`) runs
+`doctor` daily and sends a desktop notification when it fails.
 
 ## Tests
 

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from engine.provisioner.deploy import render_data, build_plugin, link_plugin
+from engine.provisioner.deploy import render_data, build_plugin, deploy_plugin, link_plugin
 from engine.provisioner.manifest import ArtefactManifest
 
 
@@ -89,6 +89,30 @@ class TestLinkPlugin(unittest.TestCase):
             res = link_plugin(self._manifest(), art, vault)
             self.assertEqual(res.status, "error")
             self.assertIn("not a symlink", res.detail)
+
+
+class TestDeployPluginGate(unittest.TestCase):
+    def test_missing_requires_skips_before_building(self):
+        with tempfile.TemporaryDirectory() as d:
+            art, vault = Path(d) / "art", Path(d) / "vault"
+            art.mkdir()
+            # A build step that is itself the missing binary: without the gate this raises
+            # FileNotFoundError, which is the crash the gate exists to prevent.
+            m = ArtefactManifest("p", "plugin", plugin_id="p", requires=["no-such-bin-xyz"],
+                                 build=[["no-such-bin-xyz", "install"]])
+            res = deploy_plugin(m, _R(), art, [vault])
+            self.assertEqual([r.status for r in res], ["skipped"])
+            self.assertIn("no-such-bin-xyz", res[0].detail)
+            self.assertFalse((vault / ".obsidian").exists())
+
+    def test_satisfied_requires_builds_and_links(self):
+        with tempfile.TemporaryDirectory() as d:
+            art, vault = Path(d) / "art", Path(d) / "vault"
+            art.mkdir()
+            m = ArtefactManifest("p", "plugin", plugin_id="p", requires=["true"], build=[["true"]])
+            res = deploy_plugin(m, _R(), art, [vault])
+            self.assertEqual([r.status for r in res], ["deployed"])
+            self.assertTrue((vault / ".obsidian" / "plugins" / "p").is_symlink())
 
 
 if __name__ == "__main__":

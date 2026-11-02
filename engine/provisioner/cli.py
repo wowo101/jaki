@@ -20,6 +20,7 @@ from .install import install
 _SECTION_TITLE = {
     "artefacts": "artefacts — what this machine declares",
     "drift": "drift — deployed, claimed by nothing declared",
+    "obsidian": "obsidian — community plugins hatch depends on",
 }
 
 

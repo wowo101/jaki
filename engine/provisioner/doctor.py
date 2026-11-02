@@ -5,6 +5,9 @@ Python, a parsing machine config, git, node, the PATH dir, its own shim,
 DEVONthink, and whether the emitted `resolved.env` still agrees with the
 machine config.
 
+Community Obsidian plugins the machine toml declares get one line each: installed
+and enabled in the canonical vault.
+
 The **artefact** half walks this machine's `[artefacts]` registry, loads each
 `provision.toml`, and reports per artefact — the gate binaries that stop a
 deployment, the deploy targets that should exist and resolve, the `needs` keys
@@ -29,10 +32,11 @@ from .config import machine_config_path, load_machine_config
 from .emit import read_resolved_env, resolved_env_path
 from .layout import (BIN_DIR, SYSTEMD_USER_DIR, app_bin_target, artefact_dir,
                      artefact_key, claim_path_names, file_dirs, file_target,
-                     plugin_link, slot_accepts, unit_is_enablable, unit_target,
-                     vault_targets,
-                     verb_target)
+                     plugin_link, rendered_source, slot_accepts, unit_is_enablable,
+                     unit_target, vault_targets, verb_target)
+from .deploy import render_text
 from .manifest import load_manifest, missing_requires
+from .obsidian import ENABLED_LIST, community_plugin_problem, community_vault, enabled_ids
 from .resolve import resolve
 
 
@@ -60,9 +64,9 @@ class Check:
 # until 2026-08-23, and `hatch-sync` lived in engine/apps/ purely because of
 # that - its provision.toml said as much.
 _CONSUMED = {
-    "verb": {"exec_name", "requires", "needs", "probe", "units"},
+    "verb": {"exec_name", "requires", "needs", "probe", "units", "files"},
     "app": {"requires", "needs", "bin", "units", "files", "probe"},
-    "plugin": {"plugin_id", "build", "outputs", "data"},
+    "plugin": {"plugin_id", "requires", "build", "outputs", "data"},
 }
 _DECLARABLE = set().union(*_CONSUMED.values())
 _TOML_KEY = {"exec_name": "exec", "plugin_id": "id"}
@@ -160,6 +164,13 @@ def awake_seconds() -> float:
         return float("inf")     # unknown: fall back to the wall-clock age alone
 
 
+def boot_id() -> str:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return ""
+
+
 def heartbeat_age(tool: str, now: float = None) -> float:
     """Seconds of *timer time* since the sweep last recorded finishing, or -1.
 
@@ -168,17 +179,26 @@ def heartbeat_age(tool: str, now: float = None) -> float:
     journal rotates. `-1` is *absent*, distinct from a large age — a missing
     input must not read as a number.
 
-    The stamp is wall-clock and the cadence is monotonic, so comparing them
-    directly faults every sweep on the machine after a lid-close longer than
-    the threshold. A timer cannot have missed more time than the machine has
-    been awake, so the age is capped at that.
+    The cadence is monotonic, so a wall-clock age faults every sweep on the
+    machine after a lid-close longer than the threshold. A stamp from
+    `engine/lib/heartbeat.py` carries `awake <boot_id> <monotonic>` on its
+    second line; within the same boot the age is the monotonic difference,
+    exact across any number of suspends. A stamp without it, or from an earlier
+    boot, falls back to the wall-clock age capped at awake time since boot.
     """
     base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
     path = base / tool / "heartbeat"
     try:
-        stamp = datetime.fromisoformat(path.read_text().strip())
-    except (OSError, ValueError):
+        lines = path.read_text().splitlines()
+        stamp = datetime.fromisoformat(lines[0].strip())
+    except (OSError, ValueError, IndexError):
         return -1.0
+    mark = lines[1].split() if len(lines) > 1 else []
+    if len(mark) == 3 and mark[0] == "awake" and mark[1] == boot_id():
+        try:
+            return awake_seconds() - float(mark[2])
+        except ValueError:
+            pass
     wall_age = (now if now is not None else time.time()) - stamp.timestamp()
     return min(wall_age, awake_seconds())
 
@@ -260,7 +280,8 @@ def _enablement_problems(m, art: Path, enabled_units: set) -> tuple:
     return problems, off
 
 
-def _deployed_problems(m, art: Path, bin_dir: Path, systemd_dir: Path, vaults: list):
+def _deployed_problems(m, art: Path, bin_dir: Path, systemd_dir: Path, vaults: list,
+                       root: Path = None, emitted: dict = None):
     """Everything this artefact should have on disk, checked where install put it.
 
     Returns the problems and the PATH names whose link came back clean — only
@@ -281,8 +302,23 @@ def _deployed_problems(m, art: Path, bin_dir: Path, systemd_dir: Path, vaults: l
         for entry in m.bin:
             note(_link_problem(app_bin_target(bin_dir, entry), art / entry.source, entry.name),
                  entry.name)
+    # Files, like units, are a property of the artefact: `deploy_verb` links them too.
+    if m.kind in ("verb", "app"):
         for entry in m.files:
-            note(_link_problem(file_target(entry), art / entry.source, str(file_target(entry))))
+            target = file_target(entry)
+            if not entry.render:
+                note(_link_problem(target, art / entry.source, str(target)))
+                continue
+            rendered = rendered_source(root, m.name, entry)
+            problem = _link_problem(target, rendered, str(target))
+            # The link can be sound while its bytes are stale: the template changed, or the
+            # checkout moved, since the last install. Re-rendering is what tells them apart.
+            if not problem and emitted is not None:
+                env = dict(emitted, HATCH_REPO=str(root))
+                if rendered.read_text() != render_text((art / entry.source).read_text(), env):
+                    problem = (f"{target}: rendered from an older {entry.source} or another "
+                               f"checkout – run `hatch install`")
+            note(problem)
     # A unit is a property of the artefact, not of its tier: `deploy_verb` links
     # units too, so checking them only under `app` left a verb's units unverified.
     # deploy skips the unit block without systemctl, so the check does too.
@@ -291,6 +327,8 @@ def _deployed_problems(m, art: Path, bin_dir: Path, systemd_dir: Path, vaults: l
             note(_link_problem(unit_target(systemd_dir, rel), art / rel, Path(rel).name))
 
     if m.kind == "plugin":
+        # From the emitted file, the one install read when it enabled the plugin.
+        canonical_vault = Path(emitted["VAULT"]) if emitted and emitted.get("VAULT") else None
         for f in m.outputs:
             if not (art / f).is_file():
                 probs.append(f"not built: {f} missing from {art}")
@@ -300,6 +338,11 @@ def _deployed_problems(m, art: Path, bin_dir: Path, systemd_dir: Path, vaults: l
             probs.append("no vault endpoint configured — nothing to link into")
         for vault in vaults:
             note(_link_problem(plugin_link(vault, m), art, str(vault)))
+        # Obsidian loads only the ids in its enabled list, so a linked plugin can sit inert.
+        # The canonical vault only: install enables it there, and nowhere else.
+        if canonical_vault and m.plugin_id not in (enabled_ids(canonical_vault) or []):
+            probs.append(f"not enabled in {canonical_vault / ENABLED_LIST} – run `hatch install` or "
+                         f"turn it on in Obsidian; to keep it off, drop it from the machine toml")
     return probs, sound
 
 
@@ -400,7 +443,8 @@ def _ok_detail(m, bin_dir: Path, vaults: list, units_off: list = None,
         parts.extend(notes)
     off = f" ({'; '.join(parts)})" if parts else ""
     if m.kind == "verb":
-        return str(verb_target(bin_dir, m)) + off
+        files = f", {_plural(len(m.files), 'file')}" if m.files else ""
+        return str(verb_target(bin_dir, m)) + files + off
     if m.kind == "app":
         units = f", {_plural(enabled_count, 'unit')} enabled" if m.units else ""
         files = f", {_plural(len(m.files), 'file')}" if m.files else ""
@@ -461,7 +505,7 @@ def artefact_check(root: Path, name: str, slot: str, emitted, emits: set, bin_di
         for entry in m.files:
             target = file_target(entry)
             dest_names.setdefault(target.parent, set()).add(target.name)
-    probs, sound = _deployed_problems(m, art, bin_dir, systemd_dir, vaults)
+    probs, sound = _deployed_problems(m, art, bin_dir, systemd_dir, vaults, root, emitted)
     enable_probs, units_off = _enablement_problems(m, art, enabled_units or set())
     stale_probs, stale_notes = _staleness_problems(m, art, enabled_units or set())
     probs += enable_probs + stale_probs
@@ -565,6 +609,56 @@ def units_env_link_check(root: Path, link: Path = None) -> Check:
     return Check("units env", True, f"{link} -> {want}")
 
 
+def model_ids_check(root: Path) -> Check:
+    """The repo-local half of engine/models-check.py: every model id and endpoint a client
+    asks for – the committed defaults and this machine's gitignored .env overrides – is one
+    the router serves, and every id the registry declares is aliased onto its entry.
+
+    Run here because nothing else runs it: a laptop .env named a retired model for five
+    weeks, every keep's tagging got a 404, and the full script (which also ssh-es to the
+    box) passed whenever someone remembered to run it, since it read only committed files.
+    """
+    script = root / "engine" / "models-check.py"
+    if not script.exists():
+        return Check("model ids", True, "no engine/models-check.py in this tree", informational=True)
+    import importlib.machinery
+    import importlib.util
+    import tomllib
+    loader = importlib.machinery.SourceFileLoader("models_check", str(script))
+    spec = importlib.util.spec_from_loader("models_check", loader)
+    mc = importlib.util.module_from_spec(spec)
+    try:
+        loader.exec_module(mc)
+        reg = tomllib.loads((root / "engine" / "models.toml").read_text())
+        drift = []
+        for check in (mc.check_consumer_defaults, mc.check_local_overrides,
+                      mc.check_router_aliases):
+            drift += check(reg, root)[0]
+    except Exception as e:  # noqa: BLE001 – a broken checker is a finding, not a crash
+        return Check("model ids", False, f"engine/models-check.py could not run: {e}")
+    if drift:
+        return Check("model ids", False, "; ".join(drift[:3])
+                     + (f" (+{len(drift) - 3} more)" if len(drift) > 3 else "")
+                     + " – full report: engine/models-check.py")
+    return Check("model ids", True, "client defaults, local .env overrides and router aliases "
+                                    "agree with engine/models.toml")
+
+
+def community_plugin_checks(cfg, r) -> list:
+    """One line per community Obsidian plugin the machine toml says hatch depends on.
+
+    Obsidian says nothing when a plugin is missing: the feature it carries just stops.
+    """
+    vault, problem = community_vault(cfg, r)
+    if problem:
+        return [Check("obsidian", False, problem, section="obsidian")]
+    out = []
+    for spec in cfg.obsidian.get("community_plugins", []) if vault else []:
+        problem, detail = community_plugin_problem(spec, vault)
+        out.append(Check(spec["id"], problem is None, problem or detail, section="obsidian"))
+    return out
+
+
 def run_doctor(root: Path, hostname: str, bin_dir: Path = None,
                systemd_dir: Path = None) -> list:
     bin_dir = BIN_DIR if bin_dir is None else bin_dir
@@ -576,7 +670,13 @@ def run_doctor(root: Path, hostname: str, bin_dir: Path = None,
     if not cfg_path.exists():
         checks.append(Check("config", False, f"missing {cfg_path.name}; run `hatch init`"))
         return checks
-    cfg = load_machine_config(cfg_path)
+    try:
+        cfg = load_machine_config(cfg_path)
+    except ValueError as e:
+        # A report that dies on a typo in the toml says nothing about the rest of the machine,
+        # and doctor-watch would relay a traceback's last line.
+        checks.append(Check("config", False, f"{cfg_path.name}: {e}"))
+        return checks
     checks.append(Check("config", True, f"role={cfg.role}"))
     r = resolve(cfg, platform.detect())
     checks.append(Check("git", Path(r.env["GIT_BIN"]).exists() or shutil.which("git") is not None,
@@ -595,6 +695,7 @@ def run_doctor(root: Path, hostname: str, bin_dir: Path = None,
                         "DT-gated verbs (recall -d / keep -p)", informational=True))
     env_check, emitted = resolved_env_check(root, r)
     checks.append(env_check)
+    checks.append(model_ids_check(root))
     # Only where a serving unit actually names it. A laptop that deploys no serving tier has
     # no use for the link and should not be told it is missing one.
     if "model-serving" in cfg.artefacts.get(artefact_key("infra"), []):
@@ -617,6 +718,7 @@ def run_doctor(root: Path, hostname: str, bin_dir: Path = None,
         checks.append(Check("[units].enabled", False,
                             f"names no artefact on this machine ships: {', '.join(unknown)}",
                             section="artefacts"))
+    checks += community_plugin_checks(cfg, r)
     # A `[[files]]` dest landing in one of the two standard dirs is claimed there
     # by name, not rescanned; anywhere else gets its own pass, because a strategy
     # that writes to arbitrary paths makes the scanned set a declared one.

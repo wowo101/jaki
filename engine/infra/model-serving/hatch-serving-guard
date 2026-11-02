@@ -19,6 +19,23 @@
 #   ln -sfn "$(realpath hatch-serving-guard)" ~/.local/bin/hatch-serving-guard
 set -u
 
+# EVERY REFUSAL IS ALSO IN THE JOURNAL. The guard runs as llama-swap's upstream command, and
+# llama-swap keeps that command's stderr to itself: a refused load reaches the caller as
+# "upstream command exited prematurely" and nothing says why. So stderr is held in a file while
+# the checks run; on a refusal the exit trap copies it to the journal under this tag
+# (`journalctl --user -t hatch-serving-guard`) and to the original stderr, and before the exec
+# below it goes to stderr alone.
+GUARD_ERR=$(mktemp "${TMPDIR:-/tmp}/hatch-serving-guard.XXXXXX") || GUARD_ERR=/dev/null
+exec 3>&2 2>>"$GUARD_ERR"
+guard_exit() {
+  local rc=$?
+  [ "$rc" -ne 0 ] && command -v logger >/dev/null 2>&1 &&
+    logger -t hatch-serving-guard -- "refused ${HATCH_SWAP_ID:-a load} (exit $rc): $(tr '\n' ' ' < "$GUARD_ERR" 2>/dev/null)"
+  cat "$GUARD_ERR" >&3 2>/dev/null
+  [ "$GUARD_ERR" = /dev/null ] || rm -f "$GUARD_ERR"
+}
+trap guard_exit EXIT
+
 GUARD_MARGIN_GIB="${GUARD_MARGIN_GIB:-8}"    # KV cache, compute buffers, slack
 
 # What holds the GPU is defined once, in engine/lib/gpu-binaries.env, shared with gpu-lease
@@ -449,4 +466,9 @@ if [ -n "$size_gib" ]; then
   echo "hatch-serving-guard: ok – need ~${need} GiB, ${avail} GiB available${resident_note:+, alongside $resident_note}; starting." >&2
 fi
 
+
+trap - EXIT
+exec 2>&3 3>&-
+cat "$GUARD_ERR" >&2 2>/dev/null
+[ "$GUARD_ERR" = /dev/null ] || rm -f "$GUARD_ERR"
 exec "$@"

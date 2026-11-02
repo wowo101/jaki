@@ -3,7 +3,7 @@
 
     hatch-image-front --port PORT -- SERVER-COMMAND...
 
-llama-swap's `zimage` entry runs this in place of sd-server. It starts SERVER-COMMAND (sd-server)
+Each of llama-swap's image entries runs this in place of sd-server. It starts SERVER-COMMAND (sd-server)
 on a free loopback port of its own, appending `--listen-port`, and proxies every request from
 PORT to it. A POST to a synchronous generation path (GENERATION_PATHS) is a generation; every
 other request is forwarded as it is. Before a generation is forwarded it:
@@ -33,6 +33,7 @@ zimage's cold load (measured 2026-09-28) – plus ~10 s to reload; a kill costs 
 """
 
 import ctypes
+import fcntl
 import http.client
 import http.server
 import json
@@ -144,6 +145,24 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+# ONE GENERATION AT A TIME ON THE BOX, across every image entry. Each entry runs its own front,
+# and the marker is one file: without a lock shared between processes, a second front could
+# overwrite the marker, finish first and delete it while the first still generates – letting the
+# paused model start and the pressure watcher unload the busy image entry mid-image – and two
+# admissions could pass before either peak arrived. `gen_lock` orders this process's threads;
+# the flock orders the fronts.
+LOCK_PATH = MARKER.parent / "image-generation.lock"
+
+
+def clear_marker() -> None:
+    """Remove the marker only if this process wrote it; another front may own it now."""
+    try:
+        if json.loads(MARKER.read_text()).get("pid") == os.getpid():
+            MARKER.unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass
+
+
 class Front(http.server.BaseHTTPRequestHandler):
     child_port = 0
     gen_lock = threading.Lock()
@@ -196,10 +215,11 @@ class Front(http.server.BaseHTTPRequestHandler):
         if self.path.split("?", 1)[0] not in GENERATION_PATHS:
             return self._forward()
         unloaded, addr = [], ""
-        with self.gen_lock:
+        MARKER.parent.mkdir(parents=True, exist_ok=True)
+        with self.gen_lock, open(LOCK_PATH, "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)          # released when the file closes
             try:
                 addr = router_addr()
-                MARKER.parent.mkdir(parents=True, exist_ok=True)
                 MARKER.write_text(json.dumps({"pid": os.getpid(), "started": time.time()}))
                 unloaded = pause(addr) if addr else []
                 if not addr:
@@ -219,7 +239,7 @@ class Front(http.server.BaseHTTPRequestHandler):
             except OSError as e:                      # the caller hung up; the image is moot
                 log(f"generation abandoned by its caller: {e}")
             finally:
-                MARKER.unlink(missing_ok=True)
+                clear_marker()
                 if unloaded:
                     threading.Thread(target=resume, args=(addr, unloaded), daemon=True).start()
 
@@ -249,7 +269,7 @@ def main() -> int:
 
     def stop(signum, _frame):
         stopping.set()
-        MARKER.unlink(missing_ok=True)
+        clear_marker()
         child.terminate()
         try:
             child.wait(timeout=20)
@@ -261,7 +281,7 @@ def main() -> int:
         child.wait()
         if not stopping.is_set():
             log(f"image server exited {child.returncode}")
-            MARKER.unlink(missing_ok=True)
+            clear_marker()
             os._exit(1)
 
     signal.signal(signal.SIGTERM, stop)

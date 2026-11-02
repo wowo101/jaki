@@ -53,9 +53,18 @@ class FileEntry:
     written, which is state that goes stale on its own. Every consumer this
     strategy exists for reads a symlink transparently. If one ever cannot, a copy
     wants content hashing on top, and this entry already names both ends for it.
+
+    `render = true` is for a consumer that needs this machine's paths written into
+    the file itself – a native-messaging manifest must name its host by absolute
+    path, and a repo file cannot. The source is then a template: `install` fills in
+    the `{repo}`/`{vault}`/`{git_bin}`/`{path_prepend}` tokens, writes the result
+    under `engine/.hatch/rendered/` (derived and gitignored, like resolved.env) and
+    links the destination to that. The link still names where its bytes came from,
+    and `doctor` re-renders the template to tell current from stale.
     """
     source: str
     dest: Path
+    render: bool = False
 
 
 @dataclass
@@ -63,7 +72,7 @@ class ArtefactManifest:
     name: str
     kind: str                                   # "verb" | "plugin" | "app"
     exec_name: str = None                       # verb: the file to put on PATH
-    requires: list = field(default_factory=list)   # verb/app: binaries that gate deployment
+    requires: list = field(default_factory=list)   # binaries that gate deployment (every kind)
     needs: list = field(default_factory=list)      # verb/app: resolved-env keys that must be non-empty (doctor)
     plugin_id: str = None                       # plugin: vault folder name
     build: list = field(default_factory=list)   # plugin: list of argv lists, run without a shell
@@ -97,7 +106,7 @@ def _parse_files(raw, path: Path) -> list:
     for e in raw:
         if not isinstance(e, dict):
             raise ValueError(f"{path}: a `files` entry must be a table with `source` and `dest`, got {e!r}")
-        unknown = set(e) - {"source", "dest"}
+        unknown = set(e) - {"source", "dest", "render"}
         if unknown:
             raise ValueError(f"{path}: unknown key(s) in a `files` entry: {', '.join(sorted(unknown))}")
         if not e.get("source") or not e.get("dest"):
@@ -105,7 +114,10 @@ def _parse_files(raw, path: Path) -> list:
         dest = Path(e["dest"]).expanduser()
         if not dest.is_absolute():
             raise ValueError(f"{path}: `dest` must be absolute or ~-rooted, got {e['dest']!r}")
-        out.append(FileEntry(e["source"], dest))
+        render = e.get("render", False)
+        if not isinstance(render, bool):
+            raise ValueError(f"{path}: `render` must be true or false, got {render!r}")
+        out.append(FileEntry(e["source"], dest, render))
     return out
 
 

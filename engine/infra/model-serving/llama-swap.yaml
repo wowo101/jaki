@@ -96,7 +96,7 @@ models:
   # Profile copied from engine/models.toml [models.qnext.serve] + .vision.
   #
   # A GUARDED GPU CONTAINER, the third launch shape in the header. gufo is a C++/HIP engine for
-  # gfx1151 on ROCm 7.2.3, shipped only as a container image, so this is a `podman run` behind
+  # gfx1151 on ROCm 10.1 (0.28.1), shipped only as a container image, so this is a `podman run` behind
   # the guard. What that shape needs, each of which breaks something when dropped:
   #   ${env.HATCH_IMG_GUFO_RUNTIME}  the image by digest (`ref@sha256:…`), which `hatch install`
   #               emits from the [[images]] row. Never a tag: the upstream rebuilds its tags.
@@ -108,8 +108,9 @@ models:
   #   cmdStop     the container runs in its own libpod scope and can outlive a router restart,
   #               after which the guard refuses the next start with exit 98.
   #   checkEndpoint /ready  gufo's /health answers before the model has loaded.
-  #   --cache-disk-staging-bytes  the default (the smallest of 1 GiB, RAM/8 and the disk budget)
-  #               skips the 1.4-1.5 GB snapshots a 40-60k conversation produces (gufo #259, #279).
+  #   --stall-timeout-ms 60000  a generation that makes no progress for a minute exits 75 and
+  #               the router restarts it; without it a stuck request can hold a session for
+  #               hours while /ready stays green (gufo #753).
   #
   # The store is flat: gufo finds the other three shards beside the first. The n-gram table is
   # read from disk and holds no page cache, so 104 GiB of weights hold 84 GiB resident.
@@ -121,7 +122,7 @@ models:
     name: "Qwen3.8-Flash-Next"
     description: >-
       The machine's model. Chat, search over your notes, drafting, and it reads images. About
-      35 tokens a second at chat depth. Its German is poor and drops the occasional Chinese
+      50 tokens a second at chat depth. Its German is poor and drops the occasional Chinese
       word where a German one belongs.
     cmd: |
       ${env.HATCH_HOME}/.local/bin/hatch-serving-guard
@@ -140,7 +141,7 @@ models:
       --reasoning-effort low
       --temperature 1.0 --top-p 0.95 --top-k 20 --min-p 0.0
       --presence-penalty 0.0 --repeat-penalty 1.0
-      --cache-disk /cache --cache-disk-staging-bytes 8589934592
+      --cache-disk /cache --stall-timeout-ms 60000
     cmdStop: /usr/bin/podman stop -t 30 hatch-qnext
     # The router lets this many requests be in flight to qnext and answers 429 past it; its own
     # default is 10. 18 is gufo's 2 sessions plus its 16 queued, so the router stops admitting
@@ -182,7 +183,7 @@ models:
     ttl: 0                      # never unloaded by the router; hatch-image-front pauses it per image
 
   # ── image generation ───────────────────────────────────────────────────────────────
-  # Z-Image-Turbo via stable-diffusion.cpp's sd-server (host binary, Vulkan build 97d2990; all
+  # Z-Image-Turbo via stable-diffusion.cpp's sd-server (host binary, Vulkan build c678dfe; all
   # libs bundled). The guard execs hatch-image-front, which runs sd-server as its child and
   # passes llama-swap's SIGTERM on to it – no cmdStop.
   # Weights are split: the guard sizes all three files. Profile: engine/models.toml
@@ -215,6 +216,7 @@ models:
     checkEndpoint: /
     unlisted: true              # reached by its id at /v1/images/generations; Open WebUI has no image generation configured
     ttl: 900
+
 
   # ── speech in and speech out ───────────────────────────────────────────────────────
   # speaches: faster-whisper for transcription, Kokoro and Piper for synthesis, behind the
@@ -286,7 +288,7 @@ models:
 
 groups:
   # ONE GROUP HOLDING EVERYTHING, which is only correct because the pair was measured rather
-  # than calculated. `swap: false` means loading a member never unloads another, so all four can
+  # than calculated. `swap: false` means loading a member never unloads another, so every member can
   # be up at once; `exclusive: false` and `persistent: true` are the belt for a future second
   # group. NOTHING HERE PRELOADS: `hooks.on_startup.preload` exists in this llama-swap and is
   # deliberately unused, because it fires a GET / at each named model and speaches serves no `/`
