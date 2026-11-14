@@ -32,7 +32,7 @@ TERMINATOR = "###COMPLETE"
 
 
 def weights(reg: dict) -> list[str]:
-    """state, file, repo, path, bytes, sha256, verify_always — the fetcher's whole input.
+    """state, file, repo, path, bytes, sha256, verify_always, revision — the fetcher's whole input.
 
     The archived rows live in `engine/models.archive.toml` beside the registry, and are
     appended here when that file exists: on the box the store's whole desired state is
@@ -45,7 +45,7 @@ def weights(reg: dict) -> list[str]:
             rows += tomllib.load(fh).get("weights", [])
     return [SEP.join([
         r["state"], r["file"], r["repo"], r["path"], str(r["bytes"]),
-        r.get("sha256", ""), "1" if r.get("verify_always") else "",
+        r.get("sha256", ""), "1" if r.get("verify_always") else "", r.get("revision") or "main",
     ]) for r in rows]
 
 

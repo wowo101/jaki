@@ -61,13 +61,13 @@ esac
 registry_read weights || exit 2
 ROWS=("${REGISTRY_ROWS[@]}")
 
-# dl REPO REMOTE_PATH BYTES LOCAL_NAME – curl-resume into <name>.part, verify the exact size,
-# then move into place. REMOTE_PATH may include a subdirectory (split GGUFs live under their
-# rung's directory); LOCAL_NAME flattens the parts side by side in $STORE, which is what
-# llama.cpp expects when -m points at the 00001-of-000NN part.
+# dl REPO REMOTE_PATH BYTES LOCAL_NAME REVISION – curl-resume into <name>.part from that Hub
+# revision, verify the exact size, then move into place. REMOTE_PATH may include a subdirectory
+# (split GGUFs live under their rung's directory); LOCAL_NAME flattens the parts side by side
+# in $STORE, which is what llama.cpp expects when -m points at the 00001-of-000NN part.
 dl() {
-  local repo="$1" file="$2" want="$3" name="$4"
-  local url="https://huggingface.co/$repo/resolve/main/$file"
+  local repo="$1" file="$2" want="$3" name="$4" rev="$5"
+  local url="https://huggingface.co/$repo/resolve/$rev/$file"
   local part="$STORE/$name.part" have rc n=0
   if [ -f "$STORE/$name" ]; then
     have=$(stat -c %s "$STORE/$name")
@@ -119,8 +119,9 @@ dl() {
     # upstream requantised in place. Say what to do about it, and say the partial is still there:
     # nothing else in this script reports a .part, so an unmentioned 3 GB orphan is invisible.
     echo "[FAIL] $name: downloaded $have bytes, manifest pins $want." >&2
-    echo "       Upstream may have replaced the artefact under the same name. Either sideload the" >&2
-    echo "       pinned file, or re-pin this row and re-measure whatever was measured on it." >&2
+    echo "       Upstream may have replaced the artefact under the same name. Set the row's" >&2
+    echo "       revision to the commit that still serves the pinned file, or re-pin the row and" >&2
+    echo "       re-measure whatever was measured on it." >&2
     echo "       The partial is at $part and no later run removes it." >&2
     return 1
   fi
@@ -171,7 +172,7 @@ fi
 for row in "${ROWS[@]}"; do
   # \x1f, never a tab: tab is an IFS *whitespace* character even when IFS is exactly a tab, so
   # consecutive tabs collapse and a row with an empty middle field reads back shifted by one.
-  IFS="$REGISTRY_SEP" read -r state name repo path want sha always <<< "$row"
+  IFS="$REGISTRY_SEP" read -r state name repo path want sha always rev <<< "$row"
   declared+=("$name")
 
   if [ "$state" != "serving" ]; then
@@ -200,7 +201,7 @@ for row in "${ROWS[@]}"; do
 
   fresh=0
   [ -f "$STORE/$name" ] || fresh=1
-  if ! dl "$repo" "$path" "$want" "$name"; then fail=1; continue; fi
+  if ! dl "$repo" "$path" "$want" "$name" "$rev"; then fail=1; continue; fi
   if [ -n "$sha" ] && { [ "$fresh" = 1 ] || [ -n "$always" ]; }; then
     verify_sha "$name" "$sha" 1 || fail=1
   fi

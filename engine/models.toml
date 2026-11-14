@@ -55,7 +55,8 @@ ceiling_gib = 102                          # practical model+KV ceiling (124 GB 
 # ─────────────────────────────────────────────────────────────────────────────────────
 # THE PORTFOLIO (roles decided 2026-07-27; last revised 2026-09-08, the sole-resident call)
 # Three roles, all three standing at once behind one address, `llama-swap` on :9090:
-#   resident  ← everything interactive: chat, recall, drafting, reading an image
+#   resident  ← everything interactive: chat, recall, drafting, reading an image; and a
+#               meeting's speaker names and summary, which need the whole transcript
 #   delegate  ← the mechanical work: tagging passes and transcript cleanup batches
 #   image     ← local image generation, co-resident with both
 #
@@ -81,7 +82,7 @@ gguf     = "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"   # 4-shard split
 swap_id  = "qnext"                         # its llama-swap model id; how the tier names it
 size_gb  = 111.3
 params   = "125B total / 6B active MoE (10-of-512 routed, expert_ffn_len 640, 48 blocks: 36 Gated DeltaNet + 12 Qwen Sparse Attention) plus a 51B n-gram embedding table"
-purpose  = "Everything interactive: chat, recall, drafting, and reading images. The box's only large model, and the only one Open WebUI lists."
+purpose  = "Everything interactive: chat, recall, drafting, and reading images; and the transcriber's speaker names and meeting summaries, one request over the whole transcript. The box's only large model, and the only one Open WebUI lists."
 adopted  = """SOLE RESIDENT at reasoning_effort low, SERVED ON GUFO SINCE 2026-09-28: unsloth/Qwen3.8-Flash-Next-GGUF UD-Q4_K_XL (4 shards) + Unsloth's shared MTP Q8_0 head + Unsloth mmproj BF16, in the gufo runtime image pinned in [[images]]. ADOPTED 2026-09-08 on two sealed blind reads and served on llama.cpp until the switch, decided 2026-09-27 on a two-session trial (evaluations/models/reports/gufo/README.md). The llama.cpp serve and its measurements: [retired.qnext_llamacpp] in engine/models.archive.toml."""
 evidence = """Two sealed blind reads, both opened 2026-09-08 after the verdicts were committed at a834385. DRAFTING: ranking P02 > P06 > P03 > P05 > P04 > P01 resolves to N D N N D D – qnext first, its worst passage above ds4's worst two, mean rank 2.67 vs 4.33. ds4 held the escalation rung on drafting alone (recall moved to the 27B on 2026-08-17), so losing it leaves that rung with nothing to escalate to. RUNG: four pairs indistinguishable on the read, so the marker count decides – low scores 16/18 against medium's 14/18 at 24% less wall. The n=1 ladder read preferring medium does not survive n=4. Reports: evaluations/models/reports/qnext-vs-ds4/prose/ and reports/qnext-rung/, each with VERDICT.md; assessment hub reports/qnext/README.md. SPEED on gufo 0.1.1, 2026-09-28, served with the MTP head, n=5 a cell: decode 35.3 tok/s at ~2k, 37.6 at ~13k, 37.4 at ~29k, 33.3 at ~59k, acceptance 0.58-0.67; prefill 1,100-1,220 tok/s at every depth. Against the llama.cpp pin on one evening (2026-09-27): prefill 2.0x, MTP decode +7% at ~2k and +24-38% from ~13k to ~59k, the six-query recall battery 19 min against 28. The llama.cpp speed history: [retired.qnext_llamacpp].speed."""
 regression_cleared = """The retired 27B tier existed largely because the 35B FAILS the Librela known-answer query (answers 2026-05-18 against gold 2026-07-11, reading top-BM25-relevance as most-recent). qnext concludes 2026-07-11 in 9 of 9 runs across qnext-low, qnext-battery and qnext-norare, separates ordering from administering a dose, and surfaces the still-unchecked 2026-08-26 order that no other arm mentions. VERIFIED BY READING THE ANSWERS: both dates appear in every arm's text, so a grep count for the gold date is not the test and would have passed the 35B too."""
@@ -133,7 +134,8 @@ role     = "delegate"
 gguf     = "Qwen3.5-4B-UD-Q4_K_XL.gguf"
 swap_id  = "qwen3.5-4b"                    # its llama-swap model id; how the tier names it
 size_gb  = 3.0
-purpose  = "The mechanical work, and since 2026-09-08 the model that actually does it: document tagging and transcript cleanup batches all resolve here."
+on_gufo  = "NOT ON GUFO (2026-11-14). gufo's own text models start at Qwen3.8 27B, dense, which would not fit beside qnext and an image. Its community extension registry offers LFM3 1.7B (MIT), untested here; the last model under 4B in this slot, MiniCPM5-2B, lost it on recall and knowledge (2026-09-10). The slot exists so bulk tagging and cleanup run beside chat without taking the resident's two sessions (the ruling below). Reopens if a small model on gufo passes this slot's tagging slice."
+purpose  = "The mechanical work, and since 2026-09-08 the model that actually does it: document tagging and transcript cleanup batches all resolve here. A meeting's summary falls back to it when qnext does not answer; qnext writes it otherwise, because on a 41-minute meeting this model, summarising 3,500-word chunks, invented a name and an organisation that qnext, reading the whole transcript, got right (WORK/model-serving.md, 2026-11-04)."
 ruling   = "THE SLOT AND THE DELEGATION PATTERN BOTH STAY (decided 2026-09-11), and this model holds the slot until a successor appears. Raised because a faster engine would narrow the resident's gap to this model from 4.4x prefill and 1.9x decode to roughly 1.4x and 1.3x, which retires SPEED as the reason to keep a second model. Three reasons survive that and none is measured: CONCURRENCY - a single-model box serving a tagging batch beside a chat turn shares one KV pool, and on halogen's published table two streams halve per-stream decode and the drafter stops speculating unless a stream is alone; THINKING COST - this model runs thinking fully off, which is what stops it spending its budget on reasoning_content and returning empty tags at finish_reason=length, and a reasoning resident would need an equivalent floor over a 400-document batch; TAGGING QUALITY ON THE RESIDENT, never run on the strip-and-reconstruct harness, on a slot that has already rejected two faster challengers for losing year, author recall and tag recall. AVAILABILITY argues the same way: one model means a stall takes chat, recall, tagging and image reading down together. The cells that would settle it are in WORK/halogen-eval.md."
 consumers = """PROMOTED 2026-09-08 from a role this key described to one it holds. Until the sole-resident deployment those three consumers pointed at :8081 and therefore at the 35B, while this entry's `purpose` said tagging was the delegate's job and the strip-and-reconstruct harness scored the 4B – both true of different paths, and nothing said so. THE COST IS NAMED RATHER THAN DISCOVERED LATER: the 4B has never been scored against the 35B on tagging, only against Ling-3.0-tiny, so the change in tagging quality is real and unmeasured. Against Ling it holds 100% within the prompt's 2-5 tag limit (Ling 52%), in-pool 87% (78), year 86% (76), authors 0.92 (0.82).
 
@@ -171,6 +173,7 @@ role     = "image"
 gguf     = "z_image_turbo-Q8_0.gguf"
 swap_id  = "zimage"                        # its llama-swap model id
 size_gb  = 11.2
+on_gufo  = "NOT ON GUFO (2026-11-14). gufo serves no Z-Image, and this entry is the image model whose licence (Apache 2.0) allows commercial use; gufo's image models carry non-commercial licences. Reopens if gufo adds an image model whose licence allows commercial use."
 purpose  = "Local image generation: illustration, concept imagery, essay material. NOT diagrams or infographics – those are code-rendered (Mermaid or hand-authored SVG). Rides llama-swap as a guarded ttl'd entry for the single gesture; a batch takes the gpu-lease and stands its own sd-server, like any eval."
 weights  = "Three files, summed by the guard: the Q8_0 diffusion model (6,577,440,704 B, leejet/Z-Image-Turbo-GGUF – the sd.cpp author's own conversion) + the Qwen3-4B-Instruct-2507 Q8_0 text encoder (4,280,405,600 B – the EXACT model Z-Image conditions on; the store's Qwen3.5-4B cannot substitute) + FLUX's VAE as flux-ae.safetensors (335,304,388 B, sha256 afc8e282… – pulled from an ungated mirror, black-forest-labs is gated and 401s)."
 evidence = "Backend A/B on the box 2026-08-22 (evaluations/models/zimage-backend-ab.sh, ab-20260822-100014): same prompt, seed 42, 768x1024, 8 steps, three runs per backend, every PNG pixel-asserted (stddev ~47, ~90k distinct colours – the grey-PNG VAE-OOM failure of sd.cpp #1220 never appeared). ROCm (7.14 toolbox) 29.3 s/image, Vulkan (host binary) 30.9 s – both stable, outputs byte-identical across runs within a backend at fixed seed, NOT across backends. VULKAN PINNED on operational shape, not speed: a host binary with bundled libs under the guard (no container, no cmdStop, no tenancy in the ds4 toolbox; since 2026-09-28 behind hatch-image-front, which signals it on stop), and 1.6 s/image does not buy that complexity back. Served round trip verified through llama-swap: 45.3 s cold including load, image pixel-asserted."
@@ -205,6 +208,7 @@ changes  = "Ask for a picture and one arrives in about half a minute, or 45 seco
 role     = "speech"
 swap_id  = "speech"                        # its llama-swap entry; callers name a model id below
 size_gb  = 2.0                             # weights, measured on HF 2026-09-10: whisper turbo 1.62 + Kokoro 0.35 + Piper 0.06. RESIDENT COST IS NOT THAT: the container idles at ~60 MB RSS and reaches ~2.5 GiB while whisper is loaded, releasing it 300 s after the last transcription.
+on_gufo  = """NOT ON GUFO YET (2026-11-14); the strongest gufo candidate in the portfolio, unmeasured. gufo's picks are Qwen3-ASR 1.7B and Qwen3-TTS 1.7B at BF16. On the GPU they would take memory and decode time from the resident, which this entry runs on the CPU to avoid, and on gufo Qwen3-ASR returns no timestamps. gufo main also runs both on the XDNA NPU at about half GPU speed (upstream's figures of 2026-11-13; in no release yet), which removes the GPU objection, but the box's `amd_iommu=off` switches the NPU off; dropping it costs single-digit prefill on Vulkan, unmeasured on gufo (MEMORY.md, 2026-09-14). Qwen3-TTS speaks German among its ten languages, where Piper thorsten-medium is one small voice. Reopens when the NPU path ships in a release: then a prefill A/B of qnext with and without `amd_iommu=off`, a German listening test against Piper, and a German transcript against whisper."""
 purpose  = "Speech in and speech out for the whole tailnet: Open WebUI's microphone and read-aloud, and any client that posts to /v1/audio/transcriptions or /v1/audio/speech. CPU only – it holds no GPU and takes no lease."
 server   = "speaches 0.8.3 (MIT), ghcr.io/speaches-ai/speaches:0.8.3-cpu, image digest sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8. Three executors behind the OpenAI audio endpoints: faster-whisper in, Kokoro and Piper out. PINNED TO THE RELEASE, NOT latest-cpu: 0.9.0 is in release-candidate upstream and renames the configuration this entry sets – stt_model_ttl and tts_model_ttl replace WHISPER__TTL, and preload_models arrives. Bump deliberately and re-read the WHISPER__* names against the new config.py when you do."
 
@@ -343,6 +347,9 @@ note    = "Tag 0.28.1 carried this digest on 2026-10-30; built on ROCm 10.1 (clr
 # `registry-query.py` appends them when it sits beside this one. The rows carry
 # only what the fetcher needs plus the choices a reader would otherwise re-litigate.
 #
+# `revision` is the Hub commit the file is fetched from, `main` when absent. A row sets it when
+# upstream has replaced the file under the same name and the pinned bytes are still served there.
+#
 # `sha256` is the file's LFS oid on Hugging Face, recorded where it is known. Only
 # flux-ae.safetensors is CHECKED after a pull, and its row says why.
 # ─────────────────────────────────────────────────────────────────────────────────────
@@ -351,6 +358,7 @@ note    = "Tag 0.28.1 carried this digest on 2026-10-30; built on ROCm 10.1 (clr
 file   = "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
 repo   = "unsloth/Qwen3.8-Flash-Next-GGUF"
 path   = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
+revision = "38bb39ee97821de2c9009abb7e93950eec396e66"
 bytes  = 10946624
 sha256 = "4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082"
 state  = "serving"
@@ -360,6 +368,7 @@ for    = "qnext"
 file   = "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf"
 repo   = "unsloth/Qwen3.8-Flash-Next-GGUF"
 path   = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf"
+revision = "38bb39ee97821de2c9009abb7e93950eec396e66"
 bytes  = 49859583136
 sha256 = "3f342f1c1580473f1ee94ddd5b28206e8c07a70fa1a366f59d1d6c922919a6c9"
 state  = "serving"
@@ -369,6 +378,7 @@ for    = "qnext"
 file   = "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf"
 repo   = "unsloth/Qwen3.8-Flash-Next-GGUF"
 path   = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf"
+revision = "38bb39ee97821de2c9009abb7e93950eec396e66"
 bytes  = 49376141504
 sha256 = "56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3"
 state  = "serving"
@@ -378,11 +388,12 @@ for    = "qnext"
 file   = "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf"
 repo   = "unsloth/Qwen3.8-Flash-Next-GGUF"
 path   = "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf"
+revision = "38bb39ee97821de2c9009abb7e93950eec396e66"
 bytes  = 12087983520
 sha256 = "753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a"
 state  = "serving"
 for    = "qnext"
-note   = "103.7 GiB on disk and 84 GiB resident under gufo, which reads the 26.8 GiB n-gram table from disk and holds no page cache for it. Under llama.cpp the same rung does not fit the 102 GiB ceiling without routing that table out with -ot, which is why the rows in engine/models.archive.toml carried UD-IQ4_XS until the gufo switch. gufo finds the other three shards beside the first. Pulled at repo revision 38bb39e, sha256 checked against the LFS oids 2026-09-27."
+note   = "103.7 GiB on disk and 84 GiB resident under gufo, which reads the 26.8 GiB n-gram table from disk and holds no page cache for it. Under llama.cpp the same rung does not fit the 102 GiB ceiling without routing that table out with -ot, which is why the rows in engine/models.archive.toml carried UD-IQ4_XS until the gufo switch. gufo finds the other three shards beside the first. Pulled at repo revision 38bb39e, sha256 checked against the LFS oids 2026-09-27. `main` has served a different split of the same tensors since 2026-11-04, so all four rows pin that revision."
 
 [[weights]]
 file   = "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"

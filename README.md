@@ -83,6 +83,18 @@ on the CPU.
 A guard refuses any GPU model load the memory cannot hold and pauses the small model when needed, e.g. while an
 image generates.
 
+**Why several engines.** Every model can be loaded at the same time behind the one address, so a
+chat can listen, speak and draw without unloading the model that answers. That makes memory the
+budget the whole set shares: the chat model takes about 90 of the GPU's 124 GiB. So each model is
+picked to fit beside the others, and each engine is picked for the model:
+
+* gufo also serves image, speech and embedding models, at full 16-bit precision. Its image
+  model needs 28.5 GiB, more than the 27.6 GiB the machine has free with the chat model loaded,
+  and its licence bars commercial use. gufo's own text models start at 27B.
+* Work that does not need the GPU stays off it. Speech runs on the processor, so it never slows
+  an answer or waits for the GPU.
+* The image model's licence allows commercial use.
+
 All components used in jaki are Open Source so you have full transparency about what's happening "behind the scenes" and with your data.
 
 ## Further documents

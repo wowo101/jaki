@@ -1,6 +1,6 @@
 # `model-store` – the weights on disk, kept at what `engine/models.toml` declares
 
-**Status: current (2026-10-05).** The `[[weights]]` rows in `engine/models.toml` are the
+**Status: current (2026-11-10).** The `[[weights]]` rows in `engine/models.toml` are the
 manifest: one row per file in the store, with its source, its exact byte size and, where known,
 its digest. `download-candidates.sh` reads that manifest and makes the store match it; it keeps
 no list of its own.
@@ -43,7 +43,8 @@ once, so a mismatch means the pin has changed or the file is damaged. It is rena
 `<name>.badsize`, and the run says what to do. Resuming would be wrong: against a shorter
 upstream file, curl 8.22 returns success having written nothing, and the working file would end
 up under a name nothing loads. Upstream quantisers replace files in place under the same name,
-so a pinned size can stop matching.
+so a pinned size can stop matching. A row's `revision` fetches from that Hub commit instead of
+`main`; the four qnext shards set it, because `main` serves a different split since 2026-11-04.
 
 **A download that cannot succeed gives up.** A permanent HTTP error leaves nothing to resume,
 and retrying it every 15 s forever would hold the machine's sleep inhibitor forever. The fetcher
